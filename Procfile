@@ -1,1 +1,1 @@
-web: gunicorn Backend.wsgi:application
+web: python Backend/manage.py migrate && gunicorn Backend.Backend.wsgi:application
