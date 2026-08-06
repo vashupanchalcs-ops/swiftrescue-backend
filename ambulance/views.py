@@ -17,6 +17,43 @@ logger = logging.getLogger(__name__)
 
 
 def send_otp_email(recipient, otp):
+    brevo_key = os.getenv("BREVO_API_KEY", "").strip()
+    if brevo_key:
+        payload = json.dumps({
+            "sender": {
+                "email": os.getenv("BREVO_FROM_EMAIL", "").strip() or settings.EMAIL_HOST_USER,
+                "name": os.getenv("BREVO_FROM_NAME", "SwiftRescue").strip() or "SwiftRescue",
+            },
+            "to": [{"email": recipient}],
+            "subject": "SwiftRescue OTP",
+            "textContent": f"Your SwiftRescue OTP is {otp}. It is valid for 5 minutes.",
+            "htmlContent": (
+                "<html><body>"
+                "<p>Your SwiftRescue OTP is:</p>"
+                f"<h2>{otp}</h2>"
+                "<p>This OTP is valid for 5 minutes.</p>"
+                "</body></html>"
+            ),
+        }).encode()
+        request = urllib.request.Request(
+            "https://api.brevo.com/v3/smtp/email",
+            data=payload,
+            headers={
+                "accept": "application/json",
+                "api-key": brevo_key,
+                "content-type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                if response.status >= 300:
+                    raise RuntimeError(f"Brevo returned HTTP {response.status}")
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Brevo HTTP {error.code}: {detail}") from error
+        return
+
     mailjet_key = os.getenv("MAILJET_API_KEY", "").strip()
     mailjet_secret = os.getenv("MAILJET_SECRET_KEY", "").strip()
     if mailjet_key and mailjet_secret:
