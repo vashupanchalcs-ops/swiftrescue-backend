@@ -1,6 +1,7 @@
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.core.mail import send_mail
+from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 from ambulance.models import Ambulance, DriverLocation, SuggestedRoute
@@ -18,8 +19,10 @@ def home(request):
 @csrf_exempt
 def send_otp(request):
     if request.method == "POST":
-        data  = json.loads(request.body)
-        email = data.get("email")
+        data  = json.loads(request.body or b"{}")
+        email = str(data.get("email", "")).strip().lower()
+        if not email or "@" not in email:
+            return JsonResponse({"status": "error", "message": "Valid email required"}, status=400)
         otp   = str(random.randint(100000, 999999))
         cache.set(f"otp_{email}", otp, timeout=300)
 
@@ -30,15 +33,16 @@ def send_otp(request):
 
         try:
             send_mail(
-                "SwiftRescue OTP",
+                "YiCare OTP",
                 f"Your OTP is {otp}",
-                "vashupanchal.cs@gmail.com",
+                getattr(settings, "DEFAULT_FROM_EMAIL", "") or settings.EMAIL_HOST_USER,
                 [email],
                 fail_silently=False,
             )
             print(f"[OTP] Email sent to {email}", flush=True)
         except Exception as e:
             print(f"[OTP] Email failed: {e}", flush=True)
+            return JsonResponse({"status": "error", "message": "Email service unavailable"}, status=503)
 
         return JsonResponse({"status": "otp_sent"})
     return JsonResponse({"status": "error"})
