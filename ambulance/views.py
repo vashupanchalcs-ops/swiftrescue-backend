@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 def send_otp_email(recipient, otp):
     brevo_key = os.getenv("BREVO_API_KEY", "").strip()
     if brevo_key:
+        print("[OTP] Provider: Brevo", flush=True)
         payload = json.dumps({
             "sender": {
                 "email": os.getenv("BREVO_FROM_EMAIL", "").strip() or settings.EMAIL_HOST_USER,
@@ -57,6 +58,7 @@ def send_otp_email(recipient, otp):
     mailjet_key = os.getenv("MAILJET_API_KEY", "").strip()
     mailjet_secret = os.getenv("MAILJET_SECRET_KEY", "").strip()
     if mailjet_key and mailjet_secret:
+        print("[OTP] Provider: Mailjet", flush=True)
         payload = json.dumps({
             "Messages": [{
                 "From": {
@@ -89,6 +91,7 @@ def send_otp_email(recipient, otp):
 
     resend_key = os.getenv("RESEND_API_KEY", "").strip()
     if resend_key:
+        print("[OTP] Provider: Resend", flush=True)
         payload = json.dumps({
             "from": os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev"),
             "to": [recipient],
@@ -109,6 +112,11 @@ def send_otp_email(recipient, otp):
             detail = error.read().decode("utf-8", errors="replace")[:500]
             raise RuntimeError(f"Resend HTTP {error.code}: {detail}") from error
         return
+
+    if not settings.EMAIL_HOST_USER or not settings.EMAIL_HOST_PASSWORD:
+        raise RuntimeError("No email provider configured. Set BREVO_API_KEY on Render.")
+
+    print("[OTP] Provider: SMTP", flush=True)
     send_mail(
         "YiCare OTP",
         f"Your OTP is {otp}",
