@@ -10,6 +10,7 @@ import random
 import logging
 import os
 import urllib.request
+import urllib.error
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,13 @@ def send_otp_email(recipient, otp):
             headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=20) as response:
-            if response.status >= 300:
-                raise RuntimeError(f"Resend returned HTTP {response.status}")
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                if response.status >= 300:
+                    raise RuntimeError(f"Resend returned HTTP {response.status}")
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Resend HTTP {error.code}: {detail}") from error
         return
     send_mail(
         "YiCare OTP",
