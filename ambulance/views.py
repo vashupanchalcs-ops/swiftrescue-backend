@@ -1,14 +1,129 @@
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.core.mail import send_mail
+from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 from ambulance.models import Ambulance, DriverLocation, SuggestedRoute
 import json
 import random
 import logging
+import os
+import urllib.request
+import urllib.error
+import base64
 
 logger = logging.getLogger(__name__)
+
+
+def send_otp_email(recipient, otp):
+    brevo_key = os.getenv("BREVO_API_KEY", "").strip()
+    if brevo_key:
+        print("[OTP] Provider: Brevo", flush=True)
+        payload = json.dumps({
+            "sender": {
+                "email": os.getenv("BREVO_FROM_EMAIL", "").strip() or settings.EMAIL_HOST_USER,
+                "name": os.getenv("BREVO_FROM_NAME", "SwiftRescue").strip() or "SwiftRescue",
+            },
+            "to": [{"email": recipient}],
+            "subject": "SwiftRescue OTP",
+            "textContent": f"Your SwiftRescue OTP is {otp}. It is valid for 5 minutes.",
+            "htmlContent": (
+                "<html><body>"
+                "<p>Your SwiftRescue OTP is:</p>"
+                f"<h2>{otp}</h2>"
+                "<p>This OTP is valid for 5 minutes.</p>"
+                "</body></html>"
+            ),
+        }).encode()
+        request = urllib.request.Request(
+            "https://api.brevo.com/v3/smtp/email",
+            data=payload,
+            headers={
+                "accept": "application/json",
+                "api-key": brevo_key,
+                "content-type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                if response.status >= 300:
+                    raise RuntimeError(f"Brevo returned HTTP {response.status}")
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Brevo HTTP {error.code}: {detail}") from error
+        return
+
+    mailjet_key = os.getenv("MAILJET_API_KEY", "").strip()
+    mailjet_secret = os.getenv("MAILJET_SECRET_KEY", "").strip()
+    if mailjet_key and mailjet_secret:
+        print("[OTP] Provider: Mailjet", flush=True)
+        payload = json.dumps({
+            "Messages": [{
+                "From": {
+                    "Email": os.getenv("MAILJET_FROM_EMAIL", "").strip() or settings.EMAIL_HOST_USER,
+                    "Name": "YiCare",
+                },
+                "To": [{"Email": recipient}],
+                "Subject": "YiCare OTP",
+                "TextPart": f"Your YiCare OTP is {otp}",
+            }]
+        }).encode()
+        credentials = base64.b64encode(f"{mailjet_key}:{mailjet_secret}".encode()).decode()
+        request = urllib.request.Request(
+            "https://api.mailjet.com/v3.1/send",
+            data=payload,
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                if response.status >= 300:
+                    raise RuntimeError(f"Mailjet returned HTTP {response.status}")
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Mailjet HTTP {error.code}: {detail}") from error
+        return
+
+    resend_key = os.getenv("RESEND_API_KEY", "").strip()
+    if resend_key:
+        print("[OTP] Provider: Resend", flush=True)
+        payload = json.dumps({
+            "from": os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev"),
+            "to": [recipient],
+            "subject": "YiCare OTP",
+            "text": f"Your YiCare OTP is {otp}",
+        }).encode()
+        request = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                if response.status >= 300:
+                    raise RuntimeError(f"Resend returned HTTP {response.status}")
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Resend HTTP {error.code}: {detail}") from error
+        return
+
+    if not settings.EMAIL_HOST_USER or not settings.EMAIL_HOST_PASSWORD:
+        raise RuntimeError("No email provider configured. Set BREVO_API_KEY on Render.")
+
+    print("[OTP] Provider: SMTP", flush=True)
+    send_mail(
+        "YiCare OTP",
+        f"Your OTP is {otp}",
+        getattr(settings, "DEFAULT_FROM_EMAIL", "") or settings.EMAIL_HOST_USER,
+        [recipient],
+        fail_silently=False,
+    )
 
 
 def home(request):
@@ -29,16 +144,11 @@ def send_otp(request):
         print(f"{'='*40}\n", flush=True)
 
         try:
-            send_mail(
-                "SwiftRescue OTP",
-                f"Your OTP is {otp}",
-                "vashupanchal.cs@gmail.com",
-                [email],
-                fail_silently=False,
-            )
+            send_otp_email(email, otp)
             print(f"[OTP] Email sent to {email}", flush=True)
         except Exception as e:
             print(f"[OTP] Email failed: {e}", flush=True)
+            return JsonResponse({"status": "error", "message": "Email service unavailable"}, status=503)
 
         return JsonResponse({"status": "otp_sent"})
     return JsonResponse({"status": "error"})
