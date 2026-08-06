@@ -129,7 +129,19 @@ def validate_contract_access(request):
             return JsonResponse({"valid": False, "error": "Ambulance registration number does not match"}, status=403)
         return JsonResponse({"valid": True, "role": "driver", "ambulance_id": item.id, "contract_id": item.ambulance_contract_id, "registration_number": item.registration_number, "ambulance_number": item.ambulance_number, "driver_name": item.driver})
     from hospitals.models import Hospital
-    item = Hospital.objects.filter(hospital_contract_id__iexact=contract_id, email__iexact=email, is_active=True).first()
+
+    # Admin-entered contract values may contain accidental spaces or casing
+    # differences. Compare normalized values so the same visible credentials
+    # work reliably in production as well as in the admin form.
+    normalize = lambda value: "".join(str(value or "").split()).casefold()
+    item = next(
+        (
+            hospital for hospital in Hospital.objects.filter(is_active=True)
+            if normalize(hospital.hospital_contract_id) == normalize(contract_id)
+            and normalize(hospital.email) == normalize(email)
+        ),
+        None,
+    )
     if not item:
         return JsonResponse({"valid": False, "error": "Hospital contract details do not match"}, status=403)
     if (item.registration_number or "").replace(" ", "").lower() != registration:
