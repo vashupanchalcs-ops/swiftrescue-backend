@@ -107,6 +107,7 @@ def logout_view(request):
     return JsonResponse({"status": "logout"})
 
 
+@csrf_exempt
 def validate_contract_access(request):
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
