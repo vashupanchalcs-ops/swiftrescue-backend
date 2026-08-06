@@ -103,6 +103,35 @@ def logout_view(request):
     return JsonResponse({"status": "logout"})
 
 
+def validate_contract_access(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    try:
+        data = json.loads(request.body or b"{}")
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+    role = str(data.get("role", "")).strip().lower()
+    email = str(data.get("email", "")).strip().lower()
+    contract_id = str(data.get("hospital_id") or data.get("contract_id") or "").strip()
+    registration = str(data.get("registration_number", "")).strip().replace(" ", "").lower()
+    if role not in {"driver", "hospital"} or not email or not contract_id or not registration:
+        return JsonResponse({"valid": False, "error": "Contract ID, registration number and email are required"}, status=400)
+    if role == "driver":
+        item = Ambulance.objects.filter(ambulance_contract_id__iexact=contract_id, driver_email__iexact=email).first()
+        if not item:
+            return JsonResponse({"valid": False, "error": "Ambulance contract details do not match"}, status=403)
+        if (item.registration_number or "").replace(" ", "").lower() != registration:
+            return JsonResponse({"valid": False, "error": "Ambulance registration number does not match"}, status=403)
+        return JsonResponse({"valid": True, "role": "driver", "ambulance_id": item.id, "contract_id": item.ambulance_contract_id, "registration_number": item.registration_number, "ambulance_number": item.ambulance_number, "driver_name": item.driver})
+    from hospitals.models import Hospital
+    item = Hospital.objects.filter(hospital_contract_id__iexact=contract_id, email__iexact=email, is_active=True).first()
+    if not item:
+        return JsonResponse({"valid": False, "error": "Hospital contract details do not match"}, status=403)
+    if (item.registration_number or "").replace(" ", "").lower() != registration:
+        return JsonResponse({"valid": False, "error": "Hospital registration number does not match"}, status=403)
+    return JsonResponse({"valid": True, "role": "hospital", "hospital_id": item.id, "contract_id": item.hospital_contract_id, "hospital_contract_id": item.hospital_contract_id, "registration_number": item.registration_number, "hospital_name": item.name})
+
+
 def ambulance_to_dict(a):
     return {
         "id":                a.id,

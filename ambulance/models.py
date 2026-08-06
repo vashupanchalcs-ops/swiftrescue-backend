@@ -10,6 +10,8 @@ class Ambulance(models.Model):
     ]
 
     ambulance_number  = models.CharField(max_length=50)
+    ambulance_contract_id = models.CharField(max_length=80, blank=True, default="")
+    registration_number = models.CharField(max_length=80, blank=True, default="")
     driver            = models.CharField(max_length=100)
     driver_contact    = models.CharField(max_length=20, blank=True)
     driver_email      = models.EmailField(blank=True, null=True)
