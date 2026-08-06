@@ -33,3 +33,27 @@ class Hospital(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class HospitalStaff(models.Model):
+    ROLE_CHOICES = [
+        ("doctor", "Doctor"),
+        ("nurse", "Nurse"),
+        ("technician", "Technician"),
+        ("support", "Support"),
+    ]
+
+    hospital = models.ForeignKey(Hospital, on_delete=models.CASCADE, related_name="staff")
+    full_name = models.CharField(max_length=120)
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="doctor")
+    specialization = models.CharField(max_length=120, blank=True, default="")
+    contact_number = models.CharField(max_length=20, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+    is_on_call = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    years_experience = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.full_name} ({self.role})"
