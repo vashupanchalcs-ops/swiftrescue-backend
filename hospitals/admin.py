@@ -4,7 +4,11 @@ from django.contrib import admin
 from django.contrib import admin
 from .models import Hospital, HospitalStaff
 
-admin.site.register(Hospital)
+@admin.register(Hospital)
+class HospitalAdmin(admin.ModelAdmin):
+    list_display = ["id", "hospital_contract_id", "name", "registration_number", "email", "status", "available_beds", "is_active"]
+    search_fields = ["hospital_contract_id", "name", "registration_number", "email", "contact_number"]
+    list_filter = ["status", "is_active", "hospital_type"]
 
 
 @admin.register(HospitalStaff)

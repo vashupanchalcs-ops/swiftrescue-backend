@@ -4,7 +4,7 @@ from .models import Ambulance, DriverLocation, SuggestedRoute
 
 @admin.register(Ambulance)
 class AmbulanceAdmin(admin.ModelAdmin):
-    list_display  = ["ambulance_number", "driver", "driver_email", "status", "location"]
+    list_display  = ["id", "ambulance_number", "driver", "driver_email", "driver_contact", "model", "status", "location", "latitude", "longitude"]
     search_fields = ["ambulance_number", "driver", "driver_email"]
     list_filter   = ["status"]
 

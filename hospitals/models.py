@@ -17,6 +17,8 @@ class Hospital(models.Model):
     ]
 
     name               = models.CharField(max_length=200)
+    hospital_contract_id = models.CharField(max_length=80, blank=True, default="")
+    registration_number = models.CharField(max_length=80, blank=True, default="")
     address            = models.CharField(max_length=300, blank=True, default="")
     latitude           = models.CharField(max_length=50, blank=True, default="")
     longitude          = models.CharField(max_length=50, blank=True, default="")
@@ -26,6 +28,8 @@ class Hospital(models.Model):
     total_beds         = models.IntegerField(default=0)
     available_beds     = models.IntegerField(default=0)
     icu_beds           = models.IntegerField(default=0)
+    total_ventilators  = models.IntegerField(default=0)
+    available_ventilators = models.IntegerField(default=0)
     specializations    = models.TextField(blank=True, default="")
     emergency_services = models.BooleanField(default=False)
     status             = models.CharField(max_length=20, choices=STATUS_CHOICES, default="closed")
