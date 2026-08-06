@@ -8,8 +8,38 @@ from ambulance.models import Ambulance, DriverLocation, SuggestedRoute
 import json
 import random
 import logging
+import os
+import urllib.request
 
 logger = logging.getLogger(__name__)
+
+
+def send_otp_email(recipient, otp):
+    resend_key = os.getenv("RESEND_API_KEY", "").strip()
+    if resend_key:
+        payload = json.dumps({
+            "from": os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev"),
+            "to": [recipient],
+            "subject": "YiCare OTP",
+            "text": f"Your YiCare OTP is {otp}",
+        }).encode()
+        request = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            if response.status >= 300:
+                raise RuntimeError(f"Resend returned HTTP {response.status}")
+        return
+    send_mail(
+        "YiCare OTP",
+        f"Your OTP is {otp}",
+        getattr(settings, "DEFAULT_FROM_EMAIL", "") or settings.EMAIL_HOST_USER,
+        [recipient],
+        fail_silently=False,
+    )
 
 
 def home(request):
@@ -32,13 +62,7 @@ def send_otp(request):
         print(f"{'='*40}\n", flush=True)
 
         try:
-            send_mail(
-                "YiCare OTP",
-                f"Your OTP is {otp}",
-                getattr(settings, "DEFAULT_FROM_EMAIL", "") or settings.EMAIL_HOST_USER,
-                [email],
-                fail_silently=False,
-            )
+            send_otp_email(email, otp)
             print(f"[OTP] Email sent to {email}", flush=True)
         except Exception as e:
             print(f"[OTP] Email failed: {e}", flush=True)
