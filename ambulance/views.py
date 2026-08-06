@@ -11,11 +11,45 @@ import logging
 import os
 import urllib.request
 import urllib.error
+import base64
 
 logger = logging.getLogger(__name__)
 
 
 def send_otp_email(recipient, otp):
+    mailjet_key = os.getenv("MAILJET_API_KEY", "").strip()
+    mailjet_secret = os.getenv("MAILJET_SECRET_KEY", "").strip()
+    if mailjet_key and mailjet_secret:
+        payload = json.dumps({
+            "Messages": [{
+                "From": {
+                    "Email": os.getenv("MAILJET_FROM_EMAIL", "").strip() or settings.EMAIL_HOST_USER,
+                    "Name": "YiCare",
+                },
+                "To": [{"Email": recipient}],
+                "Subject": "YiCare OTP",
+                "TextPart": f"Your YiCare OTP is {otp}",
+            }]
+        }).encode()
+        credentials = base64.b64encode(f"{mailjet_key}:{mailjet_secret}".encode()).decode()
+        request = urllib.request.Request(
+            "https://api.mailjet.com/v3.1/send",
+            data=payload,
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                if response.status >= 300:
+                    raise RuntimeError(f"Mailjet returned HTTP {response.status}")
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Mailjet HTTP {error.code}: {detail}") from error
+        return
+
     resend_key = os.getenv("RESEND_API_KEY", "").strip()
     if resend_key:
         payload = json.dumps({
