@@ -213,6 +213,67 @@ def logout_view(request):
     return JsonResponse({"status": "logout"})
 
 
+@csrf_exempt
+def validate_contract_access(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    try:
+        data = json.loads(request.body or b"{}")
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+    role = str(data.get("role", "")).strip().lower()
+    email = str(data.get("email", "")).strip().lower()
+    contract_id = str(
+        data.get("hospital_id")
+        or data.get("hospitalId")
+        or data.get("hospital_contract_id")
+        or data.get("hospitalContractId")
+        or data.get("contract_id")
+        or data.get("contractId")
+        or ""
+    ).strip()
+    registration = str(
+        data.get("registration_number")
+        or data.get("registrationNumber")
+        or data.get("hospital_registration_number")
+        or data.get("hospitalRegistrationNumber")
+        or ""
+    ).strip().replace(" ", "").lower()
+    if role not in {"driver", "hospital"} or not email or not contract_id or not registration:
+        return JsonResponse({"valid": False, "error": "Contract ID, registration number and email are required"}, status=400)
+    if role == "driver":
+        item = Ambulance.objects.filter(ambulance_contract_id__iexact=contract_id, driver_email__iexact=email).first()
+        if not item:
+            return JsonResponse({"valid": False, "error": "Ambulance contract details do not match"}, status=403)
+        if (item.registration_number or "").replace(" ", "").lower() != registration:
+            return JsonResponse({"valid": False, "error": "Ambulance registration number does not match"}, status=403)
+        return JsonResponse({"valid": True, "role": "driver", "ambulance_id": item.id, "contract_id": item.ambulance_contract_id, "registration_number": item.registration_number, "ambulance_number": item.ambulance_number, "driver_name": item.driver})
+    from hospitals.models import Hospital
+
+    # Admin-entered contract values may contain accidental spaces or casing
+    # differences. Compare normalized values so the same visible credentials
+    # work reliably in production as well as in the admin form.
+    normalize = lambda value: "".join(str(value or "").split()).casefold()
+    item = next(
+        (
+            hospital for hospital in Hospital.objects.filter(is_active=True)
+            if normalize(hospital.hospital_contract_id) == normalize(contract_id)
+            and normalize(hospital.email) == normalize(email)
+        ),
+        None,
+    )
+    if not item:
+        print(
+            "[CONTRACT] Hospital mismatch "
+            f"email={email} contract={contract_id} registration={registration}",
+            flush=True,
+        )
+        return JsonResponse({"valid": False, "error": "Hospital contract details do not match"}, status=403)
+    if (item.registration_number or "").replace(" ", "").lower() != registration:
+        return JsonResponse({"valid": False, "error": "Hospital registration number does not match"}, status=403)
+    return JsonResponse({"valid": True, "role": "hospital", "hospital_id": item.id, "contract_id": item.hospital_contract_id, "hospital_contract_id": item.hospital_contract_id, "registration_number": item.registration_number, "hospital_name": item.name})
+
+
 def ambulance_to_dict(a):
     return {
         "id":                a.id,
