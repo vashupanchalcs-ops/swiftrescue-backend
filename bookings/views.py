@@ -50,7 +50,7 @@ def _ensure_chat_thread(booking):
         defaults={
             "user_email": booking.booked_by_email or "",
             "user_name": booking.patient_name or booking.booked_by or "",
-            "driver_email": ambulance.driver_email if ambulance else "",
+            "driver_email": (ambulance.driver_email or "") if ambulance else "",
             "driver_name": booking.driver or "",
         },
     )
