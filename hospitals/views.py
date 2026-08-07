@@ -26,7 +26,7 @@ def hospital_to_dict(h):
 
 def hospital_by_email(request):
     if request.method != "GET":
-        return JsonResponse({"error": "GET only"}, status=405)
+        return JsonResponse({"error": "Method not allowed"}, status=405)
 
     email = str(request.GET.get("email", "")).strip().lower()
     if not email or "@" not in email:
@@ -34,9 +34,11 @@ def hospital_by_email(request):
 
     hospital = Hospital.objects.filter(email__iexact=email, is_active=True).first()
     if not hospital:
-        return JsonResponse({"exists": False}, status=404)
+        return JsonResponse({"exists": False, "error": "Hospital profile not found for this email"}, status=404)
 
-    return JsonResponse({"exists": True, "hospital_id": hospital.id, "name": hospital.name})
+    data = hospital_to_dict(hospital)
+    data.update({"exists": True, "hospital_id": hospital.id})
+    return JsonResponse(data)
 
 
 @csrf_exempt
