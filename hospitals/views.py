@@ -1,5 +1,6 @@
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
+from django.db.models import Q
 from django.utils import timezone
 from hospitals.models import Hospital, HospitalStaff
 from bookings.models import Booking
@@ -114,21 +115,39 @@ def hospital_dashboard(request, id):
     except Hospital.DoesNotExist:
         return JsonResponse({"error": "Hospital not found"}, status=404)
 
-    bookings = Booking.objects.filter(destination__iexact=hospital.name).exclude(status="cancelled").order_by("-created_at")
+    # New assignments use the immutable hospital id. The destination fallback keeps
+    # historical bookings visible after the production schema upgrade.
+    bookings = (
+        Booking.objects.filter(
+            Q(assigned_hospital_id=hospital.id)
+            | Q(assigned_hospital_id__isnull=True, destination__iexact=hospital.name)
+        )
+        .exclude(status__in=["cancelled", "completed"])
+        .order_by("-created_at")
+    )
     staff = HospitalStaff.objects.filter(hospital=hospital, is_active=True)
     staff_data = [staff_to_dict(member) for member in staff]
     queue = [
         {
             "booking_id": booking.id,
-            "patient_name": booking.booked_by,
-            "patient_contact": booking.booked_by_email,
+            "patient_name": booking.patient_name or booking.booked_by,
+            "patient_age": booking.patient_age,
+            "patient_gender": booking.patient_gender,
+            "patient_contact": booking.patient_contact_number or booking.booked_by_email,
             "pickup_location": booking.pickup_location,
+            "pickup_landmark": booking.pickup_landmark,
             "status": booking.status,
             "ambulance_number": booking.ambulance_number,
             "driver_name": booking.driver,
             "driver_contact": booking.driver_contact,
             "created_at": booking.created_at.isoformat(),
-            "hospital_response": "pending",
+            "hospital_assigned_at": booking.hospital_assigned_at.isoformat() if booking.hospital_assigned_at else None,
+            "hospital_response": booking.hospital_response,
+            "hospital_response_note": booking.hospital_response_note,
+            "patient_condition": booking.patient_condition,
+            "vitals_summary": booking.vitals_summary,
+            "report_sent_to_hospital": booking.report_sent_to_hospital,
+            "insurance_status": booking.insurance_status,
         }
         for booking in bookings
     ]
