@@ -279,7 +279,7 @@ def booking_detail(request, id):
         booking.ambulance_number = ambulance.ambulance_number or ""
         booking.driver = ambulance.driver or ""
         booking.driver_contact = ambulance.driver_contact or ""
-        booking.sent_to_driver = _to_bool(data.get("send_to_driver"), True)
+        booking.sent_to_driver = _to_bool(data.get("send_to_driver"), False)
         booking.sent_to_driver_at = timezone.now() if booking.sent_to_driver else None
         ambulance.status = "en_route"
         ambulance.save(update_fields=["status"])
@@ -304,6 +304,32 @@ def booking_detail(request, id):
         booking.hospital_alert_sent = _to_bool(data.get("send_hospital_alert"), True)
         booking.hospital_alert_sent_at = timezone.now() if booking.hospital_alert_sent else None
         changed_messages.append(f"Hospital {hospital.name} assigned to Booking #{booking.id}.")
+
+    if "send_to_driver" in data and ambulance_value is None:
+        send_to_driver_val = _to_bool(data["send_to_driver"])
+        if send_to_driver_val:
+            if booking.status != "confirmed":
+                return JsonResponse({"error": "Booking must be confirmed before sending to driver"}, status=400)
+            if not booking.assigned_hospital_name:
+                return JsonResponse({"error": "Assign hospital before sending booking to driver"}, status=400)
+            if booking.hospital_response != "ready":
+                return JsonResponse({"error": "Hospital must be ready before sending booking to driver"}, status=400)
+            if not booking.ambulance_id:
+                return JsonResponse({"error": "Assign ambulance before sending booking to driver"}, status=400)
+
+            if not booking.sent_to_driver:
+                booking.sent_to_driver = True
+                booking.sent_to_driver_at = timezone.now()
+                Ambulance.objects.filter(id=booking.ambulance_id).update(status="en_route")
+                changed_messages.append(
+                    f"Booking dispatched to driver {booking.driver}. Live route and traffic updates are now active."
+                )
+        else:
+            if booking.sent_to_driver:
+                booking.sent_to_driver = False
+                booking.sent_to_driver_at = None
+                Ambulance.objects.filter(id=booking.ambulance_id).update(status="available")
+                changed_messages.append("Booking recalled from driver.")
 
     if "status" in data:
         new_status = str(data["status"]).lower().strip()
