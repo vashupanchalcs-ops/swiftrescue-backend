@@ -14,6 +14,8 @@ class Ambulance(models.Model):
     driver_contact    = models.CharField(max_length=20, blank=True)
     driver_email      = models.EmailField(blank=True, null=True)
     model             = models.CharField(max_length=100, blank=True)
+    ambulance_contract_id = models.CharField(max_length=80, blank=True, default="")
+    registration_number = models.CharField(max_length=80, blank=True, default="")
     speed             = models.CharField(max_length=20, default="0")
     status            = models.CharField(max_length=20, choices=STATUS_CHOICES, default="offline")
     location          = models.CharField(max_length=200, blank=True)

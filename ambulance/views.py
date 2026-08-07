@@ -276,22 +276,24 @@ def validate_contract_access(request):
 
 def ambulance_to_dict(a):
     return {
-        "id":                a.id,
-        "ambulance_number":  a.ambulance_number,
-        "driver":            a.driver,
-        "driver_contact":    a.driver_contact,
-        "driver_email":      a.driver_email or "",
-        "model":             a.model,
-        "speed":             a.speed,
-        "status":            a.status,
-        "location":          a.location,
-        "nearest_hospital":  a.nearest_hospital,
-        "hospital_distance": a.hospital_distance,
-        "eta_to_patient":    a.eta_to_patient,
-        "eta_to_hospital":   a.eta_to_hospital,
-        "latitude":          a.latitude,
-        "longitude":         a.longitude,
-        "last_updated":      a.last_updated.strftime("%d %b %Y, %I:%M %p"),
+        "id":                    a.id,
+        "ambulance_number":      a.ambulance_number,
+        "driver":                a.driver,
+        "driver_contact":        a.driver_contact,
+        "driver_email":          a.driver_email or "",
+        "model":                 a.model,
+        "ambulance_contract_id": a.ambulance_contract_id,
+        "registration_number":   a.registration_number,
+        "speed":                 a.speed,
+        "status":                a.status,
+        "location":              a.location,
+        "nearest_hospital":      a.nearest_hospital,
+        "hospital_distance":     a.hospital_distance,
+        "eta_to_patient":        a.eta_to_patient,
+        "eta_to_hospital":       a.eta_to_hospital,
+        "latitude":              a.latitude,
+        "longitude":             a.longitude,
+        "last_updated":          a.last_updated.strftime("%d %b %Y, %I:%M %p"),
     }
 
 
@@ -309,6 +311,8 @@ def ambulance_list(request):
             driver_contact    = data.get("driver_contact", ""),
             driver_email      = data.get("driver_email", ""),
             model             = data.get("model", ""),
+            ambulance_contract_id = data.get("ambulance_contract_id", ""),
+            registration_number   = data.get("registration_number", ""),
             speed             = data.get("speed", "0"),
             status            = data.get("status", "available"),
             location          = data.get("location", ""),
@@ -329,8 +333,10 @@ def ambulance_by_driver_email(request):
     email = request.GET.get("email", "")
     if not email:
         return JsonResponse({"error": "email parameter required"}, status=400)
-    ambulances = Ambulance.objects.filter(driver_email=email)
-    return JsonResponse([ambulance_to_dict(a) for a in ambulances], safe=False)
+    a = Ambulance.objects.filter(driver_email__iexact=email).first()
+    if not a:
+        return JsonResponse({"error": "Ambulance not found"}, status=404)
+    return JsonResponse(ambulance_to_dict(a))
 
 
 @csrf_exempt
@@ -350,6 +356,8 @@ def ambulance_detail(request, id):
         a.driver_contact    = data.get("driver_contact",    a.driver_contact)
         a.driver_email      = data.get("driver_email",      a.driver_email)
         a.model             = data.get("model",             a.model)
+        a.ambulance_contract_id = data.get("ambulance_contract_id", a.ambulance_contract_id)
+        a.registration_number   = data.get("registration_number",   a.registration_number)
         a.speed             = data.get("speed",             a.speed)
         a.status            = data.get("status",            a.status)
         a.location          = data.get("location",          a.location)
@@ -364,9 +372,11 @@ def ambulance_detail(request, id):
 
     if request.method == "PATCH":
         data = json.loads(request.body)
-        if "driver"         in data: a.driver         = data["driver"]
-        if "driver_contact" in data: a.driver_contact = data["driver_contact"]
-        if "driver_email"   in data: a.driver_email   = data["driver_email"]
+        if "driver"                in data: a.driver                = data["driver"]
+        if "driver_contact"        in data: a.driver_contact        = data["driver_contact"]
+        if "driver_email"          in data: a.driver_email          = data["driver_email"]
+        if "ambulance_contract_id" in data: a.ambulance_contract_id = data["ambulance_contract_id"]
+        if "registration_number"   in data: a.registration_number   = data["registration_number"]
 
         new_status = data.get("status")
         if new_status:
