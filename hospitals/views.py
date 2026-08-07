@@ -1,6 +1,7 @@
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from hospitals.models import Hospital
+from bookings.models import Booking
 import json
 
 
@@ -39,6 +40,42 @@ def hospital_by_email(request):
     data = hospital_to_dict(hospital)
     data.update({"exists": True, "hospital_id": hospital.id})
     return JsonResponse(data)
+
+
+def hospital_dashboard(request, id):
+    if request.method != "GET":
+        return JsonResponse({"error": "GET only"}, status=405)
+
+    try:
+        hospital = Hospital.objects.get(id=id, is_active=True)
+    except Hospital.DoesNotExist:
+        return JsonResponse({"error": "Hospital not found"}, status=404)
+
+    bookings = Booking.objects.filter(destination__iexact=hospital.name).exclude(status="cancelled").order_by("-created_at")
+    queue = [
+        {
+            "booking_id": booking.id,
+            "patient_name": booking.booked_by,
+            "patient_contact": booking.booked_by_email,
+            "pickup_location": booking.pickup_location,
+            "status": booking.status,
+            "ambulance_number": booking.ambulance_number,
+            "driver_name": booking.driver,
+            "driver_contact": booking.driver_contact,
+            "created_at": booking.created_at.isoformat(),
+            "hospital_response": "pending",
+        }
+        for booking in bookings
+    ]
+
+    return JsonResponse({
+        "hospital": hospital_to_dict(hospital),
+        "summary": {"active_cases": len(queue)},
+        "queue": queue,
+        "staff": [],
+        "on_call_specialists": [],
+        "redirect_suggestion": None,
+    })
 
 
 @csrf_exempt
