@@ -4,7 +4,8 @@ import urllib.parse
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-GOOGLE_API_KEY = "YOUR_GOOGLE_API_KEY_HERE"
+from django.conf import settings
+GOOGLE_API_KEY = getattr(settings, "GOOGLE_MAPS_API_KEY", "").strip()
 
 
 def _geocode(address):
@@ -134,11 +135,18 @@ def get_route_by_booking(request, booking_id):
             pass
 
     pickup_latlon = None
-    if booking.pickup_location:
+    if booking.pickup_latitude and booking.pickup_longitude:
+        try:
+            pickup_latlon = f"{float(booking.pickup_latitude)},{float(booking.pickup_longitude)}"
+        except (ValueError, TypeError):
+            pass
+
+    if not pickup_latlon and booking.pickup_location:
         try:
             pickup_latlon = _geocode(booking.pickup_location)
         except Exception:
             pickup_latlon = booking.pickup_location
+
     if not pickup_latlon:
         return JsonResponse({"error": "Pickup geocode nahi hua"}, status=400)
 
