@@ -186,3 +186,10 @@ def mark_all_read(request):
         Booking.objects.filter(is_read=False).update(is_read=True)
         return JsonResponse({"status": "ok"})
     return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+def voice_call_alert(request):
+    """Provide the call-alert status expected by the deployed admin client."""
+    if request.method != "GET":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    return JsonResponse({"is_active_call": False, "active_count": 0})
