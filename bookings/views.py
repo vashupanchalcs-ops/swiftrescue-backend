@@ -350,6 +350,109 @@ def booking_detail(request, id):
         Ambulance.objects.filter(id=booking.ambulance_id).update(status="available")
         changed_messages.append(f"Driver completed Booking #{booking.id}.")
 
+    patient_report = data.get("patient_report")
+    if isinstance(patient_report, dict):
+        booking.patient_name = str(patient_report.get("patient_name", "")).strip()
+        booking.patient_age = str(patient_report.get("patient_age", "")).strip()
+        booking.patient_gender = str(patient_report.get("patient_gender", "")).strip()
+        booking.attendant_name = str(patient_report.get("attendant_name", "")).strip()
+        booking.attendant_contact = str(patient_report.get("attendant_contact", "")).strip()
+        booking.patient_condition = str(patient_report.get("patient_condition", "")).strip()
+        booking.vitals_summary = str(patient_report.get("vitals_summary", "")).strip()
+        booking.report_submitted_by = str(patient_report.get("submitted_by", "")).strip() or booking.driver or "Driver Team"
+        booking.report_submitted_at = timezone.now()
+        
+        try:
+            from django.core.mail import send_mail
+            send_mail(
+                subject=f"📝 Patient Condition Report — Booking #{booking.id}",
+                message=f"""Patient report submitted by driver.
+
+Booking ID: #{booking.id}
+Patient: {booking.patient_name or booking.booked_by}
+Age: {booking.patient_age or '-'}
+Gender: {booking.patient_gender or '-'}
+Attendant: {booking.attendant_name or '-'} ({booking.attendant_contact or '-'})
+Condition: {booking.patient_condition or '-'}
+Vitals: {booking.vitals_summary or '-'}
+
+Pickup: {booking.pickup_location}
+Hospital: {booking.assigned_hospital_name or booking.destination or '-'}
+""",
+                from_email="vashupanchal.cs@gmail.com",
+                recipient_list=["vashupanchal.cs@gmail.com"],
+                fail_silently=True,
+            )
+        except Exception as e:
+            print("Admin patient report email error:", e)
+        changed_messages.append(f"Driver submitted patient condition form for Booking #{booking.id}. Admin review pending.")
+
+    if _to_bool(data.get("send_report_to_hospital")):
+        if not booking.assigned_hospital_email:
+            return JsonResponse({"error": "Assigned hospital email missing"}, status=400)
+        if not booking.report_submitted_at:
+            return JsonResponse({"error": "Patient report not submitted yet"}, status=400)
+        try:
+            from django.core.mail import send_mail
+            send_mail(
+                subject=f"🧾 Patient Clinical Report — Booking #{booking.id}",
+                message=f"""Incoming patient report.
+
+Booking ID: #{booking.id}
+Patient: {booking.patient_name or booking.booked_by}
+Age: {booking.patient_age or '-'}
+Gender: {booking.patient_gender or '-'}
+Attendant: {booking.attendant_name or '-'} ({booking.attendant_contact or '-'})
+Condition: {booking.patient_condition or '-'}
+Vitals: {booking.vitals_summary or '-'}
+
+Pickup: {booking.pickup_location}
+Ambulance: {booking.ambulance_number}
+Driver: {booking.driver} ({booking.driver_contact or '-'})
+""",
+                from_email="vashupanchal.cs@gmail.com",
+                recipient_list=[booking.assigned_hospital_email],
+                fail_silently=True,
+            )
+            booking.report_sent_to_hospital = True
+            booking.report_sent_to_hospital_at = timezone.now()
+            changed_messages.append("Patient clinical report forwarded to hospital intake desk.")
+        except Exception as e:
+            print("Hospital report email error:", e)
+
+    insurance_details = data.get("insurance_details")
+    if isinstance(insurance_details, dict):
+        def _pick_text(keys, fallback=""):
+            for key in keys:
+                val = insurance_details.get(key, "")
+                if val is None:
+                    continue
+                txt = str(val).strip()
+                if txt:
+                    return txt
+            return fallback
+
+        booking.insurance_full_name = _pick_text(["full_name", "patient_name", "fullName"], booking.insurance_full_name)
+        booking.insurance_dob = _pick_text(["date_of_birth", "dob", "dateOfBirth"], booking.insurance_dob)
+        booking.insurance_gender = _pick_text(["gender"], booking.insurance_gender)
+        booking.insurance_provider = _pick_text(["insurance_provider", "provider", "insuranceProvider"], booking.insurance_provider)
+        booking.insurance_policy_member_id = _pick_text(["policy_member_id", "member_id", "policyMemberId"], booking.insurance_policy_member_id)
+        booking.insurance_policy_holder_name = _pick_text(["policy_holder_name", "holder_name", "policyHolderName"], booking.insurance_policy_holder_name)
+        booking.insurance_government_id = _pick_text(["government_id", "govt_id", "governmentId"], booking.insurance_government_id)
+        booking.insurance_sum_insured = _pick_text(["sum_insured", "sumInsured"], booking.insurance_sum_insured)
+        booking.insurance_emergency_nature = _pick_text(["emergency_nature", "emergencyNature"], booking.insurance_emergency_nature)
+        booking.insurance_exclusions_waiting = _pick_text(
+            ["exclusions_waiting_period", "exclusions_waiting", "waiting_period", "exclusionsWaitingPeriod"],
+            booking.insurance_exclusions_waiting,
+        )
+        booking.insurance_submitted_by = _pick_text(["submitted_by", "submittedBy"], booking.insurance_submitted_by) or booking.driver or "Ambulance Team"
+        booking.insurance_submitted_at = timezone.now()
+        booking.insurance_status = "pending"
+        booking.insurance_reviewed_by = ""
+        booking.insurance_reviewed_at = None
+        booking.insurance_hospital_note = "Awaiting hospital insurance approval."
+        changed_messages.append("Medical insurance details submitted to hospital.")
+
     booking.save()
     for message in changed_messages:
         _push_system_message(booking, message)
