@@ -64,6 +64,7 @@ class HospitalStaff(models.Model):
         ("doctor", "Doctor"),
         ("nurse", "Nurse"),
         ("technician", "Technician"),
+        ("support", "Support Staff"),
         ("coordinator", "Emergency Coordinator"),
         ("administrator", "Administrator"),
         ("other", "Other"),
@@ -83,6 +84,9 @@ class HospitalStaff(models.Model):
     registration_number = models.CharField(max_length=100, blank=True, default="")
     contact_number      = models.CharField(max_length=20, blank=True, default="")
     email               = models.EmailField(blank=True, default="")
+    years_experience    = models.PositiveSmallIntegerField(default=0)
+    photo_data          = models.TextField(blank=True, default="")
+    banner_data         = models.TextField(blank=True, default="")
     shift               = models.CharField(max_length=20, choices=SHIFT_CHOICES, default="day")
     is_on_call          = models.BooleanField(default=False)
     is_active           = models.BooleanField(default=True)

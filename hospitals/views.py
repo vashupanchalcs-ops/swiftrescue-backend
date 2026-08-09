@@ -59,12 +59,22 @@ def staff_to_dict(member):
         "registration_number": member.registration_number,
         "contact_number": member.contact_number,
         "email": member.email,
+        "years_experience": member.years_experience,
+        "photo_data": member.photo_data,
+        "banner_data": member.banner_data,
         "shift": member.shift,
         "is_on_call": member.is_on_call,
         "is_active": member.is_active,
         "joined_on": member.joined_on.isoformat() if member.joined_on else None,
         "notes": member.notes,
     }
+
+
+STAFF_MUTABLE_FIELDS = (
+    "full_name", "role", "specialization", "registration_number", "contact_number",
+    "email", "years_experience", "photo_data", "banner_data", "shift", "is_on_call",
+    "is_active", "notes",
+)
 
 
 HOSPITAL_MUTABLE_FIELDS = (
@@ -242,7 +252,10 @@ def hospital_staff_list(request, hospital_id):
         data = json.loads(request.body or b"{}")
         if not str(data.get("full_name", "")).strip():
             return JsonResponse({"error": "full_name is required"}, status=400)
-        staff = HospitalStaff.objects.create(hospital=hospital, **{k: data[k] for k in ("full_name", "role", "specialization", "registration_number", "contact_number", "email", "shift", "is_on_call", "is_active", "notes") if k in data})
+        staff = HospitalStaff.objects.create(
+            hospital=hospital,
+            **{field: data[field] for field in STAFF_MUTABLE_FIELDS if field in data},
+        )
         return JsonResponse(staff_to_dict(staff), status=201)
     return JsonResponse({"error": "Method not allowed"}, status=405)
 
@@ -258,7 +271,7 @@ def hospital_staff_detail(request, hospital_id, staff_id):
         return JsonResponse({"status": "deleted"})
     if request.method == "PATCH":
         data = json.loads(request.body or b"{}")
-        for field in ("full_name", "role", "specialization", "registration_number", "contact_number", "email", "shift", "is_on_call", "is_active", "notes"):
+        for field in STAFF_MUTABLE_FIELDS:
             if field in data:
                 setattr(staff, field, data[field])
         staff.save()
