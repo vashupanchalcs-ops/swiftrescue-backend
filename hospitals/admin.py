@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Hospital
+from .models import Hospital, HospitalStaff
 
 
 @admin.register(Hospital)
@@ -20,3 +20,23 @@ class HospitalAdmin(admin.ModelAdmin):
         ("Clinical Services", {"fields": ("specializations", "facilities", "emergency_services", "is_24x7", "has_blood_bank", "insurance_partners")} ),
         ("Notes & Audit", {"fields": ("notes", "created_at", "updated_at")} ),
     )
+
+
+@admin.register(HospitalStaff)
+class HospitalStaffAdmin(admin.ModelAdmin):
+    list_display = (
+        "full_name", "hospital", "role", "specialization", "shift",
+        "is_on_call", "is_active", "contact_number",
+    )
+    list_filter = ("role", "shift", "is_on_call", "is_active", "hospital")
+    search_fields = (
+        "full_name", "specialization", "registration_number", "contact_number",
+        "email", "hospital__name",
+    )
+    list_editable = ("shift", "is_on_call", "is_active")
+    autocomplete_fields = ("hospital",)
+    readonly_fields = ("created_at", "updated_at")
+
+    def has_add_permission(self, request):
+        # Staff profile cards must be created from the hospital portal.
+        return False
