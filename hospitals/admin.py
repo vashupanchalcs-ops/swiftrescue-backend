@@ -38,5 +38,9 @@ class HospitalStaffAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "updated_at")
 
     def has_add_permission(self, request):
-        # Staff profile cards must be created from the hospital portal.
+        # Staff profile cards must be created from the hospital portal dashboard UI only.
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        # Staff management is performed via the hospital dashboard UI.
         return False

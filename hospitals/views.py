@@ -92,6 +92,14 @@ CAPACITY_FIELDS = {
 
 
 def apply_hospital_payload(hospital, data):
+    # Handle key aliases from frontend resource form
+    if "available_ventilators" in data and "ventilators_available" not in data:
+        data["ventilators_available"] = data["available_ventilators"]
+    if "available_icu_beds" in data and "icu_beds" not in data:
+        data["icu_beds"] = data["available_icu_beds"]
+    elif "icu_beds" in data and "available_icu_beds" not in data:
+        data["available_icu_beds"] = data["icu_beds"]
+
     for field in HOSPITAL_MUTABLE_FIELDS:
         if field in data:
             setattr(hospital, field, data[field])
