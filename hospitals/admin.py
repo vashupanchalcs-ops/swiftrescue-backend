@@ -1,12 +1,5 @@
 from django.contrib import admin
-from .models import Hospital, HospitalStaff
-
-
-class HospitalStaffInline(admin.TabularInline):
-    model = HospitalStaff
-    extra = 0
-    fields = ("full_name", "role", "specialization", "contact_number", "shift", "is_on_call", "is_active")
-    show_change_link = True
+from .models import Hospital
 
 
 @admin.register(Hospital)
@@ -19,7 +12,6 @@ class HospitalAdmin(admin.ModelAdmin):
     search_fields = ("name", "hospital_contract_id", "registration_number", "email", "contact_number", "city")
     list_editable = ("available_beds", "available_icu_beds", "ventilators_available", "status", "is_active")
     readonly_fields = ("created_at", "updated_at", "last_capacity_updated")
-    inlines = [HospitalStaffInline]
     fieldsets = (
         ("Identity & Contracts", {"fields": ("name", "hospital_type", "hospital_contract_id", "registration_number", "status", "is_active")} ),
         ("Address & Contact", {"fields": ("address", "city", "state", "pincode", "latitude", "longitude", "contact_number", "emergency_contact", "email", "website")} ),
@@ -28,13 +20,3 @@ class HospitalAdmin(admin.ModelAdmin):
         ("Clinical Services", {"fields": ("specializations", "facilities", "emergency_services", "is_24x7", "has_blood_bank", "insurance_partners")} ),
         ("Notes & Audit", {"fields": ("notes", "created_at", "updated_at")} ),
     )
-
-
-@admin.register(HospitalStaff)
-class HospitalStaffAdmin(admin.ModelAdmin):
-    list_display = ("full_name", "hospital", "role", "specialization", "shift", "is_on_call", "is_active", "contact_number")
-    list_filter = ("role", "shift", "is_on_call", "is_active", "hospital")
-    search_fields = ("full_name", "specialization", "registration_number", "contact_number", "email", "hospital__name")
-    list_editable = ("shift", "is_on_call", "is_active")
-    autocomplete_fields = ("hospital",)
-    readonly_fields = ("created_at", "updated_at")

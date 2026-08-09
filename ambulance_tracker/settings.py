@@ -7,6 +7,8 @@ from pathlib import Path
 import importlib.util
 import os
 
+import dj_database_url
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -20,7 +22,8 @@ def env_list(name, default=""):
 
 # ─── Security ─────────────────────────────────────────────────────────────────
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-your-secret-key-here")
-DEBUG = env_bool("DJANGO_DEBUG", True)
+# Local development remains convenient while Render never exposes Django's debug pages by default.
+DEBUG = env_bool("DJANGO_DEBUG", not bool(os.getenv("RENDER")))
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost")
 
 # ─── Installed Apps ───────────────────────────────────────────────────────────
@@ -86,8 +89,14 @@ TEMPLATES = [
 ]
 
 # ─── Database ─────────────────────────────────────────────────────────────────
-# PostgreSQL-ready (fallback: sqlite)
-if os.getenv("POSTGRES_DB"):
+# Render supplies its managed PostgreSQL connection as a single DATABASE_URL.
+# SQLite remains only for local development without a configured database.
+database_url = os.getenv("DATABASE_URL", "").strip()
+if database_url:
+    DATABASES = {
+        "default": dj_database_url.parse(database_url, conn_max_age=600),
+    }
+elif os.getenv("POSTGRES_DB"):
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",

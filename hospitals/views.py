@@ -213,3 +213,54 @@ def hospital_detail(request, id):
         return JsonResponse({"status": "deleted"})
 
     return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@csrf_exempt
+def hospital_resources(request, id):
+    try:
+        hospital = Hospital.objects.get(id=id)
+    except Hospital.DoesNotExist:
+        return JsonResponse({"error": "Hospital not found"}, status=404)
+    if request.method not in ("GET", "PATCH"):
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    if request.method == "PATCH":
+        data = json.loads(request.body or b"{}")
+        apply_hospital_payload(hospital, data)
+        hospital.save()
+    return JsonResponse(hospital_to_dict(hospital))
+
+
+@csrf_exempt
+def hospital_staff_list(request, hospital_id):
+    try:
+        hospital = Hospital.objects.get(id=hospital_id)
+    except Hospital.DoesNotExist:
+        return JsonResponse({"error": "Hospital not found"}, status=404)
+    if request.method == "GET":
+        return JsonResponse([staff_to_dict(s) for s in hospital.staff.all()], safe=False)
+    if request.method == "POST":
+        data = json.loads(request.body or b"{}")
+        if not str(data.get("full_name", "")).strip():
+            return JsonResponse({"error": "full_name is required"}, status=400)
+        staff = HospitalStaff.objects.create(hospital=hospital, **{k: data[k] for k in ("full_name", "role", "specialization", "registration_number", "contact_number", "email", "shift", "is_on_call", "is_active", "notes") if k in data})
+        return JsonResponse(staff_to_dict(staff), status=201)
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@csrf_exempt
+def hospital_staff_detail(request, hospital_id, staff_id):
+    try:
+        staff = HospitalStaff.objects.get(id=staff_id, hospital_id=hospital_id)
+    except HospitalStaff.DoesNotExist:
+        return JsonResponse({"error": "Staff not found"}, status=404)
+    if request.method == "DELETE":
+        staff.delete()
+        return JsonResponse({"status": "deleted"})
+    if request.method == "PATCH":
+        data = json.loads(request.body or b"{}")
+        for field in ("full_name", "role", "specialization", "registration_number", "contact_number", "email", "shift", "is_on_call", "is_active", "notes"):
+            if field in data:
+                setattr(staff, field, data[field])
+        staff.save()
+        return JsonResponse(staff_to_dict(staff))
+    return JsonResponse({"error": "Method not allowed"}, status=405)
