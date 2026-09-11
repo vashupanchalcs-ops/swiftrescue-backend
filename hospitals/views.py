@@ -2,6 +2,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.db.models import Q
 from django.utils import timezone
+from ambulance.models import Ambulance
 from hospitals.models import Hospital, HospitalStaff
 from bookings.models import Booking
 import json
@@ -133,18 +134,27 @@ def hospital_dashboard(request, id):
     except Hospital.DoesNotExist:
         return JsonResponse({"error": "Hospital not found"}, status=404)
 
-    # New assignments use the immutable hospital id. The destination fallback keeps
-    # historical bookings visible after the production schema upgrade.
+    # New assignments use the immutable hospital id. Email/name fallbacks keep
+    # historical bookings visible after profile or schema changes.
+    hospital_filter = Q(assigned_hospital_id=hospital.id)
+    if hospital.email:
+        hospital_filter |= Q(assigned_hospital_email__iexact=hospital.email)
+    if hospital.name:
+        hospital_filter |= Q(assigned_hospital_name__iexact=hospital.name) | Q(destination__iexact=hospital.name)
+
     bookings = (
-        Booking.objects.filter(
-            Q(assigned_hospital_id=hospital.id)
-            | Q(assigned_hospital_id__isnull=True, destination__iexact=hospital.name)
+        Booking.objects.filter(hospital_filter)
+        .filter(
+            Q(status__in=["confirmed", "pending"])
+            | Q(report_sent_to_hospital=True)
+            | Q(report_submitted_at__isnull=False)
         )
-        .exclude(status__in=["cancelled", "completed"])
-        .order_by("-created_at")
+        .order_by("-created_at")[:100]
     )
     staff = HospitalStaff.objects.filter(hospital=hospital, is_active=True)
     staff_data = [staff_to_dict(member) for member in staff]
+    ambulance_ids = [booking.ambulance_id for booking in bookings if booking.ambulance_id]
+    ambulance_map = {amb.id: amb for amb in Ambulance.objects.filter(id__in=ambulance_ids)}
     queue = [
         {
             "booking_id": booking.id,
@@ -153,7 +163,15 @@ def hospital_dashboard(request, id):
             "patient_gender": booking.patient_gender,
             "patient_contact": booking.patient_contact_number or booking.booked_by_email,
             "pickup_location": booking.pickup_location,
+            "pickup_latitude": booking.pickup_latitude,
+            "pickup_longitude": booking.pickup_longitude,
             "pickup_landmark": booking.pickup_landmark,
+            "destination": booking.destination or booking.assigned_hospital_name or "",
+            "assigned_hospital_id": booking.assigned_hospital_id,
+            "assigned_hospital_name": booking.assigned_hospital_name,
+            "assigned_hospital_address": booking.assigned_hospital_address,
+            "assigned_hospital_contact": booking.assigned_hospital_contact,
+            "assigned_hospital_email": booking.assigned_hospital_email,
             "status": booking.status,
             "ambulance_number": booking.ambulance_number,
             "driver_name": booking.driver,
@@ -164,8 +182,40 @@ def hospital_dashboard(request, id):
             "hospital_response_note": booking.hospital_response_note,
             "patient_condition": booking.patient_condition,
             "vitals_summary": booking.vitals_summary,
+            "report_submitted_by": booking.report_submitted_by,
+            "report_submitted_at": booking.report_submitted_at.isoformat() if booking.report_submitted_at else None,
             "report_sent_to_hospital": booking.report_sent_to_hospital,
+            "report_sent_to_hospital_at": booking.report_sent_to_hospital_at.isoformat() if booking.report_sent_to_hospital_at else None,
+            "driver_modified_report": booking.driver_modified_report,
             "insurance_status": booking.insurance_status,
+            "digital_handover": {
+                "patient_condition": booking.patient_condition,
+                "vitals_summary": booking.vitals_summary,
+                "report_submitted_by": booking.report_submitted_by,
+                "report_submitted_at": booking.report_submitted_at.isoformat() if booking.report_submitted_at else None,
+                "report_sent_to_hospital": booking.report_sent_to_hospital,
+                "driver_voice_transcript": booking.driver_voice_transcript,
+                "driver_modified_report": booking.driver_modified_report,
+                "driver_report_sent_at": booking.driver_report_sent_at.isoformat() if booking.driver_report_sent_at else None,
+            },
+            "ambulance_live": (
+                {
+                    "ambulance_id": ambulance_map[booking.ambulance_id].id,
+                    "ambulance_number": ambulance_map[booking.ambulance_id].ambulance_number,
+                    "driver": ambulance_map[booking.ambulance_id].driver,
+                    "driver_contact": ambulance_map[booking.ambulance_id].driver_contact,
+                    "latitude": ambulance_map[booking.ambulance_id].latitude,
+                    "longitude": ambulance_map[booking.ambulance_id].longitude,
+                    "speed": ambulance_map[booking.ambulance_id].speed,
+                    "status": ambulance_map[booking.ambulance_id].status,
+                    "battery_percentage": getattr(ambulance_map[booking.ambulance_id], "battery_percentage", None),
+                    "last_updated": ambulance_map[booking.ambulance_id].last_updated.isoformat()
+                    if ambulance_map[booking.ambulance_id].last_updated
+                    else None,
+                }
+                if booking.ambulance_id in ambulance_map
+                else None
+            ),
         }
         for booking in bookings
     ]

@@ -165,7 +165,7 @@ def verify_otp(request):
             cache.delete(f"otp_{email}")
             return JsonResponse({"status": "success", "email": email})
         else:
-            return JsonResponse({"status": "invalid", "message": "Galat OTP hai"})
+            return JsonResponse({"status": "invalid", "message": "Invalid OTP"})
     return JsonResponse({"status": "error"})
 
 
@@ -178,7 +178,7 @@ def send_phone_otp(request):
     phone = data.get("phone", "").strip().replace(" ", "").replace("+91", "").replace("+", "")
 
     if not phone or len(phone) != 10:
-        return JsonResponse({"status": "error", "message": "Valid 10-digit phone number daalo"}, status=400)
+        return JsonResponse({"status": "error", "message": "Enter a valid 10-digit phone number"}, status=400)
 
     otp = str(random.randint(100000, 999999))
     cache.set(f"phone_otp_{phone}", otp, timeout=300)
@@ -188,7 +188,7 @@ def send_phone_otp(request):
     print(f"[PHONE OTP] Code   : {otp}", flush=True)
     print(f"{'='*40}\n", flush=True)
 
-    return JsonResponse({"status": "otp_sent", "message": f"OTP +91{phone} pe bheja gaya"})
+    return JsonResponse({"status": "otp_sent", "message": f"OTP sent to +91{phone}"})
 
 
 @csrf_exempt
@@ -205,7 +205,7 @@ def verify_phone_otp(request):
         cache.delete(f"phone_otp_{phone}")
         return JsonResponse({"status": "success", "phone": phone})
     else:
-        return JsonResponse({"status": "invalid", "message": "Galat OTP hai ya expire ho gaya"})
+        return JsonResponse({"status": "invalid", "message": "Invalid or expired OTP"})
 
 
 def logout_view(request):
@@ -425,10 +425,10 @@ def ambulance_change_request(request):
             for r in all_reqs
         )
         if already:
-            return JsonResponse({"status": "already_pending", "message": "Aapki request pehle se pending hai"})
+            return JsonResponse({"status": "already_pending", "message": "Your request is already pending"})
         all_reqs.insert(0, data)
         cache.set(CHANGE_REQ_CACHE_KEY, all_reqs, timeout=CHANGE_REQ_TIMEOUT)
-        return JsonResponse({"status": "saved", "message": "Request admin ko bhej di gayi"})
+        return JsonResponse({"status": "saved", "message": "Request sent to admin"})
 
     if request.method == "PATCH":
         data      = json.loads(request.body)
@@ -603,13 +603,13 @@ def get_location_history(request, ambulance_id):
     return JsonResponse([driver_location_to_dict(dl) for dl in history], safe=False)
 
 
-# ✅ NEW — User ke live tracking ke liye driver ki latest location
+# Latest driver location for user live tracking.
 @csrf_exempt
 def get_driver_location_by_ambulance(request):
     """
     GET /api/driver/location/?ambulance_id=<id>
-    Driver ki latest location return karta hai.
-    UserBookingMap.jsx is API se live tracking karta hai.
+    Returns the driver's latest location.
+    UserBookingMap.jsx uses this API for live tracking.
     """
     if request.method != "GET":
         return JsonResponse({"error": "GET only"}, status=405)
@@ -619,13 +619,13 @@ def get_driver_location_by_ambulance(request):
         return JsonResponse({"error": "ambulance_id parameter required"}, status=400)
 
     try:
-        # DriverLocation table se latest record
+        # Latest record from DriverLocation.
         dl = DriverLocation.objects.filter(
             ambulance_id=ambulance_id
         ).order_by("-timestamp").first()
 
         if not dl:
-            # Fallback: Ambulance table mein directly latitude/longitude check karo
+            # Fallback: check latitude/longitude directly on the Ambulance table.
             try:
                 amb = Ambulance.objects.get(id=ambulance_id)
                 if amb.latitude and amb.longitude:
@@ -644,7 +644,7 @@ def get_driver_location_by_ambulance(request):
                 pass
             return JsonResponse({"error": "No location found for this ambulance"}, status=404)
 
-        # Ambulance se driver name fetch karo
+        # Fetch driver details from the Ambulance record.
         try:
             amb              = Ambulance.objects.get(id=ambulance_id)
             driver_name      = amb.driver or ""

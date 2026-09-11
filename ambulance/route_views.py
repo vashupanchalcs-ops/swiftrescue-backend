@@ -8,6 +8,15 @@ from django.conf import settings
 GOOGLE_API_KEY = getattr(settings, "GOOGLE_MAPS_API_KEY", "").strip()
 
 
+def _is_india_coord(lat, lng):
+    try:
+        lat = float(lat)
+        lng = float(lng)
+    except (TypeError, ValueError):
+        return False
+    return 6 <= lat <= 38 and 68 <= lng <= 98
+
+
 def _geocode(address):
     params = {"address": address, "key": GOOGLE_API_KEY}
     url = "https://maps.googleapis.com/maps/api/geocode/json?" + urllib.parse.urlencode(params)
@@ -125,12 +134,15 @@ def get_route_by_booking(request, booking_id):
     if not hospital:
         hospital = Hospital.objects.filter(is_active=True, status="active").first()
     if not hospital:
-        return JsonResponse({"error": "Koi active hospital nahi mila"}, status=404)
+        return JsonResponse({"error": "No active hospital found"}, status=404)
 
     amb_latlon = None
     if amb.latitude and amb.longitude:
         try:
-            amb_latlon = f"{float(amb.latitude)},{float(amb.longitude)}"
+            amb_lat = float(amb.latitude)
+            amb_lng = float(amb.longitude)
+            if _is_india_coord(amb_lat, amb_lng):
+                amb_latlon = f"{amb_lat},{amb_lng}"
         except (ValueError, TypeError):
             pass
 
@@ -148,7 +160,7 @@ def get_route_by_booking(request, booking_id):
             pickup_latlon = booking.pickup_location
 
     if not pickup_latlon:
-        return JsonResponse({"error": "Pickup geocode nahi hua"}, status=400)
+        return JsonResponse({"error": "Pickup location could not be resolved"}, status=400)
 
     try:
         hosp_latlon = f"{float(hospital.latitude)},{float(hospital.longitude)}"
@@ -156,7 +168,7 @@ def get_route_by_booking(request, booking_id):
         try:
             hosp_latlon = _geocode(f"{hospital.name}, {hospital.address}")
         except Exception:
-            return JsonResponse({"error": "Hospital location resolve nahi hua"}, status=400)
+            return JsonResponse({"error": "Hospital location could not be resolved"}, status=400)
 
     if amb_latlon:
         origin, waypoints, destination = amb_latlon, [pickup_latlon], hosp_latlon

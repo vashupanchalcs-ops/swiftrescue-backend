@@ -1,5 +1,7 @@
 import json
+import threading
 
+from django.core.mail import send_mail
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -41,6 +43,26 @@ def _to_float(value):
 
 def _iso(value):
     return value.isoformat() if value else None
+
+
+def _send_mail_background(subject, message, recipient_list, label="email"):
+    recipients = [str(item).strip() for item in (recipient_list or []) if str(item or "").strip()]
+    if not recipients:
+        return
+
+    def _worker():
+        try:
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email="vashupanchal.cs@gmail.com",
+                recipient_list=recipients,
+                fail_silently=True,
+            )
+        except Exception as exc:
+            print(f"{label} error:", exc)
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def _ensure_chat_thread(booking):
@@ -361,12 +383,17 @@ def booking_detail(request, id):
         booking.vitals_summary = str(patient_report.get("vitals_summary", "")).strip()
         booking.report_submitted_by = str(patient_report.get("submitted_by", "")).strip() or booking.driver or "Driver Team"
         booking.report_submitted_at = timezone.now()
-        
-        try:
-            from django.core.mail import send_mail
-            send_mail(
-                subject=f"📝 Patient Condition Report — Booking #{booking.id}",
-                message=f"""Patient report submitted by driver.
+        forward_patient_report = _to_bool(patient_report.get("send_to_hospital")) or _to_bool(
+            patient_report.get("forward_to_hospital")
+        )
+        if forward_patient_report and booking.assigned_hospital_email:
+            booking.report_sent_to_hospital = True
+            booking.report_sent_to_hospital_at = timezone.now()
+            booking.driver_report_sent_at = timezone.now()
+
+        _send_mail_background(
+            subject=f"Patient Condition Report - Booking #{booking.id}",
+            message=f"""Patient report submitted by driver.
 
 Booking ID: #{booking.id}
 Patient: {booking.patient_name or booking.booked_by}
@@ -379,23 +406,12 @@ Vitals: {booking.vitals_summary or '-'}
 Pickup: {booking.pickup_location}
 Hospital: {booking.assigned_hospital_name or booking.destination or '-'}
 """,
-                from_email="vashupanchal.cs@gmail.com",
-                recipient_list=["vashupanchal.cs@gmail.com"],
-                fail_silently=True,
-            )
-        except Exception as e:
-            print("Admin patient report email error:", e)
-        changed_messages.append(f"Driver submitted patient condition form for Booking #{booking.id}. Admin review pending.")
-
-    if _to_bool(data.get("send_report_to_hospital")):
-        if not booking.assigned_hospital_email:
-            return JsonResponse({"error": "Assigned hospital email missing"}, status=400)
-        if not booking.report_submitted_at:
-            return JsonResponse({"error": "Patient report not submitted yet"}, status=400)
-        try:
-            from django.core.mail import send_mail
-            send_mail(
-                subject=f"🧾 Patient Clinical Report — Booking #{booking.id}",
+            recipient_list=["vashupanchal.cs@gmail.com"],
+            label="Admin patient report email",
+        )
+        if forward_patient_report and booking.assigned_hospital_email:
+            _send_mail_background(
+                subject=f"Patient Clinical Report - Booking #{booking.id}",
                 message=f"""Incoming patient report.
 
 Booking ID: #{booking.id}
@@ -410,15 +426,42 @@ Pickup: {booking.pickup_location}
 Ambulance: {booking.ambulance_number}
 Driver: {booking.driver} ({booking.driver_contact or '-'})
 """,
-                from_email="vashupanchal.cs@gmail.com",
                 recipient_list=[booking.assigned_hospital_email],
-                fail_silently=True,
+                label="Driver patient report hospital email",
             )
-            booking.report_sent_to_hospital = True
-            booking.report_sent_to_hospital_at = timezone.now()
-            changed_messages.append("Patient clinical report forwarded to hospital intake desk.")
-        except Exception as e:
-            print("Hospital report email error:", e)
+        changed_messages.append(
+            f"Driver submitted patient condition form for Booking #{booking.id}. "
+            + ("Hospital intake received the report." if booking.report_sent_to_hospital else "Admin review pending.")
+        )
+
+    if _to_bool(data.get("send_report_to_hospital")):
+        if not booking.assigned_hospital_email:
+            return JsonResponse({"error": "Assigned hospital email missing"}, status=400)
+        if not booking.report_submitted_at:
+            return JsonResponse({"error": "Patient report not submitted yet"}, status=400)
+        booking.report_sent_to_hospital = True
+        booking.report_sent_to_hospital_at = timezone.now()
+        booking.driver_report_sent_at = booking.driver_report_sent_at or timezone.now()
+        _send_mail_background(
+            subject=f"Patient Clinical Report - Booking #{booking.id}",
+            message=f"""Incoming patient report.
+
+Booking ID: #{booking.id}
+Patient: {booking.patient_name or booking.booked_by}
+Age: {booking.patient_age or '-'}
+Gender: {booking.patient_gender or '-'}
+Attendant: {booking.attendant_name or '-'} ({booking.attendant_contact or '-'})
+Condition: {booking.patient_condition or '-'}
+Vitals: {booking.vitals_summary or '-'}
+
+Pickup: {booking.pickup_location}
+Ambulance: {booking.ambulance_number}
+Driver: {booking.driver} ({booking.driver_contact or '-'})
+""",
+            recipient_list=[booking.assigned_hospital_email],
+            label="Hospital report email",
+        )
+        changed_messages.append("Patient clinical report forwarded to hospital intake desk.")
 
     insurance_details = data.get("insurance_details")
     if isinstance(insurance_details, dict):
