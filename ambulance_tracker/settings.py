@@ -24,7 +24,7 @@ def env_list(name, default=""):
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-your-secret-key-here")
 # Local development remains convenient while Render never exposes Django's debug pages by default.
 DEBUG = env_bool("DJANGO_DEBUG", not bool(os.getenv("RENDER")))
-ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost")
+ALLOWED_HOSTS = ["*", ".onrender.com", "127.0.0.1", "localhost"]
 
 # ─── Installed Apps ───────────────────────────────────────────────────────────
 INSTALLED_APPS = [
@@ -59,9 +59,16 @@ MIDDLEWARE = [
 ]
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
-CORS_ALLOW_ALL_ORIGINS = env_bool("CORS_ALLOW_ALL_ORIGINS", DEBUG)
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", "")
-CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS", "")
+CSRF_TRUSTED_ORIGINS = [
+    "https://*.onrender.com",
+    "https://swiftrescue-backend.onrender.com",
+    "https://aarogya-backend.onrender.com",
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://localhost:5173",
+]
 render_external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
 if render_external_url and render_external_url not in CSRF_TRUSTED_ORIGINS:
     CSRF_TRUSTED_ORIGINS.append(render_external_url)
@@ -180,8 +187,16 @@ MEDIA_URL   = "/media/"
 MEDIA_ROOT  = BASE_DIR / "media"
 
 if importlib.util.find_spec("whitenoise") is not None:
-    MIDDLEWARE.insert(2, "whitenoise.middleware.WhiteNoiseMiddleware")
-    STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+    if "whitenoise.middleware.WhiteNoiseMiddleware" not in MIDDLEWARE:
+        MIDDLEWARE.insert(2, "whitenoise.middleware.WhiteNoiseMiddleware")
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        },
+    }
 
 # ─── Default Primary Key ──────────────────────────────────────────────────────
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
