@@ -191,8 +191,9 @@ def hospital_dashboard(request, id):
         )
         .order_by("-created_at")[:100]
     )
-    staff = HospitalStaff.objects.filter(hospital=hospital, is_active=True)
-    staff_data = [staff_to_dict(member) for member in staff]
+    all_staff = HospitalStaff.objects.filter(hospital=hospital)
+    active_staff = all_staff.filter(is_active=True)
+    staff_data = [staff_to_dict(member) for member in all_staff]
     ambulance_ids = [booking.ambulance_id for booking in bookings if booking.ambulance_id]
     ambulance_map = {amb.id: amb for amb in Ambulance.objects.filter(id__in=ambulance_ids)}
     queue = [
@@ -267,11 +268,11 @@ def hospital_dashboard(request, id):
             "available_beds": hospital.available_beds,
             "available_icu_beds": hospital.available_icu_beds,
             "available_ventilators": hospital.ventilators_available,
-            "active_staff": len(staff_data),
+            "active_staff": active_staff.count(),
         },
         "queue": queue,
         "staff": staff_data,
-        "on_call_specialists": [member for member in staff_data if member["is_on_call"]],
+        "on_call_specialists": [member for member in staff_data if member["is_on_call"] and member["is_active"]],
         "redirect_suggestion": None,
     })
 
