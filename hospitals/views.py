@@ -31,14 +31,7 @@ def hospital_to_dict(h):
     nurse_count = nurses.count()
     nurse_active = nurses.filter(is_active=True).count()
 
-    if s_total == 0:
-        doc_count = 12
-        doc_active = 10
-        nurse_count = 24
-        nurse_active = 20
-        s_total = 40
-        s_active = 34
-        s_deactive = 6
+
 
     return {
         "id":                 h.id,
