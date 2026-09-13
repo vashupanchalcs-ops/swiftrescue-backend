@@ -126,13 +126,20 @@ CAPACITY_FIELDS = {
 
 
 def apply_hospital_payload(hospital, data):
-    # Handle key aliases from frontend resource form
+    # Handle key aliases from frontend resource form cleanly without overwriting Total ICU beds
     if "available_ventilators" in data and "ventilators_available" not in data:
         data["ventilators_available"] = data["available_ventilators"]
-    if "available_icu_beds" in data and "icu_beds" not in data:
-        data["icu_beds"] = data["available_icu_beds"]
-    elif "icu_beds" in data and "available_icu_beds" not in data:
-        data["available_icu_beds"] = data["icu_beds"]
+    if "ventilators_available" in data and "available_ventilators" not in data:
+        data["available_ventilators"] = data["ventilators_available"]
+
+    # If booked_beds is explicitly updated by frontend:
+    if "booked_beds" in data:
+        try:
+            b_beds = max(0, int(data["booked_beds"]))
+            t_beds = int(data.get("total_beds", hospital.total_beds or 40))
+            data["available_beds"] = max(0, t_beds - b_beds)
+        except (ValueError, TypeError):
+            pass
 
     for field in HOSPITAL_MUTABLE_FIELDS:
         if field in data:
