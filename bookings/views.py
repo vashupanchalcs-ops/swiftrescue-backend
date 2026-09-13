@@ -361,6 +361,15 @@ def booking_detail(request, id):
         booking.status = new_status
         if new_status in {"completed", "cancelled"}:
             Ambulance.objects.filter(id=booking.ambulance_id).update(status="available")
+            if booking.hospital_response == "ready" and booking.assigned_hospital_id:
+                h = Hospital.objects.filter(id=booking.assigned_hospital_id).first()
+                if h:
+                    if h.available_beds < h.total_beds:
+                        h.available_beds += 1
+                    if h.status == "full" and h.available_beds > 0:
+                        h.status = "active"
+                    h.last_capacity_updated = timezone.now()
+                    h.save(update_fields=["available_beds", "status", "last_capacity_updated", "updated_at"])
         elif new_status == "confirmed":
             Ambulance.objects.filter(id=booking.ambulance_id).update(status="en_route")
         changed_messages.append(f"Booking status changed to {new_status}.")
@@ -518,10 +527,33 @@ def booking_hospital_response(request, id):
         return JsonResponse({"error": "Not found"}, status=404)
     if not booking.assigned_hospital_id:
         return JsonResponse({"error": "Assign a hospital before responding"}, status=400)
+    
+    old_response = booking.hospital_response
     booking.hospital_response = response
     booking.hospital_response_note = str(data.get("hospital_response_note", "")).strip()
     booking.hospital_responded_at = timezone.now()
     booking.save(update_fields=["hospital_response", "hospital_response_note", "hospital_responded_at"])
+
+    # Real-time update of hospital available beds & status
+    hospital = Hospital.objects.filter(id=booking.assigned_hospital_id).first()
+    if hospital:
+        if old_response != "ready" and response == "ready":
+            # Booking accepted: decrement available beds
+            if hospital.available_beds > 0:
+                hospital.available_beds -= 1
+            if hospital.available_beds == 0:
+                hospital.status = "full"
+            hospital.last_capacity_updated = timezone.now()
+            hospital.save(update_fields=["available_beds", "status", "last_capacity_updated", "updated_at"])
+        elif old_response == "ready" and response == "not_ready":
+            # Booking rejected after acceptance: restore available bed
+            if hospital.available_beds < hospital.total_beds:
+                hospital.available_beds += 1
+            if hospital.status == "full" and hospital.available_beds > 0:
+                hospital.status = "active"
+            hospital.last_capacity_updated = timezone.now()
+            hospital.save(update_fields=["available_beds", "status", "last_capacity_updated", "updated_at"])
+
     _push_system_message(booking, f"Hospital response: {response.replace('_', ' ')}.")
     return JsonResponse(booking_to_dict(booking))
 
