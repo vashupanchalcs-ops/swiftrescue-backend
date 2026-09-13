@@ -9,6 +9,7 @@ from ambulance.tracking_views import (
     respond_route,
     driver_active_route,
     get_traffic_route,
+    active_route_by_booking,
 )
 
 urlpatterns = [
@@ -41,6 +42,7 @@ urlpatterns = [
     path("api/admin/live-locations/",    all_live_locations),
     path("api/admin/suggest-route/",     suggest_route),
     path("api/admin/traffic-route/",     get_traffic_route),
+    path("api/route/active/<int:booking_id>/", active_route_by_booking),
 
     # ── HOSPITALS & BOOKINGS ─────────────────────────
     path("api/hospitals/", include("hospitals.urls")),

@@ -55,6 +55,7 @@ class SuggestedRoute(models.Model):
     ]
 
     ambulance       = models.ForeignKey(Ambulance, on_delete=models.CASCADE, related_name="suggested_routes")
+    booking_id      = models.IntegerField(null=True, blank=True, db_index=True)
     pickup_location = models.CharField(max_length=300)
     destination     = models.CharField(max_length=300, blank=True)
     polyline        = models.TextField(blank=True)

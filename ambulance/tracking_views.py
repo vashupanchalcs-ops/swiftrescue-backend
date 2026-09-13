@@ -17,6 +17,7 @@ def _route_dict(r):
     return {
         "id":              r.id,
         "ambulance_id":    r.ambulance_id,
+        "booking_id":      getattr(r, "booking_id", None),
         "pickup_location": r.pickup_location,
         "destination":     r.destination,
         "polyline":        r.polyline,
@@ -94,21 +95,18 @@ def suggest_route(request):
     SuggestedRoute.objects.filter(ambulance=amb, status="pending").update(status="rejected")
     route = SuggestedRoute.objects.create(
         ambulance=amb,
+        booking_id=data.get("booking_id"),
         pickup_location=data.get("pickup_location", ""),
         destination=data.get("destination", ""),
         polyline=data.get("polyline", ""),
         distance_km=data.get("distance_km", ""),
         duration=data.get("duration", ""),
         status="pending",
+        pickup_lat=data.get("pickup_lat"),
+        pickup_lng=data.get("pickup_lng"),
+        dest_lat=data.get("dest_lat"),
+        dest_lng=data.get("dest_lng"),
     )
-    # Store coords if provided (for driver map rendering)
-    if data.get("pickup_lat"):
-        route.pickup_lat = data.get("pickup_lat")
-        route.pickup_lng = data.get("pickup_lng")
-        route.dest_lat   = data.get("dest_lat")
-        route.dest_lng   = data.get("dest_lng")
-        try: route.save(update_fields=["pickup_lat","pickup_lng","dest_lat","dest_lng"])
-        except: pass
     return JsonResponse(_route_dict(route), status=201)
 
 
@@ -192,3 +190,27 @@ def get_traffic_route(request):
         })
     routes.sort(key=lambda x: x["duration_sec"])
     return JsonResponse({"routes": routes, "best": routes[0], "total": len(routes)})
+
+
+@csrf_exempt
+def active_route_by_booking(request, booking_id):
+    """Return the active SuggestedRoute for a given booking_id.
+    Used by user/hospital portals to show the same route the admin sent to the driver."""
+    if request.method != "GET":
+        return JsonResponse({"error": "GET only"}, status=405)
+    route = SuggestedRoute.objects.filter(
+        booking_id=booking_id,
+        status__in=["pending", "accepted"],
+    ).order_by("-created_at").first()
+    if not route:
+        # Fallback: find by ambulance linked to this booking
+        from bookings.models import Booking
+        try:
+            booking = Booking.objects.get(id=booking_id)
+        except Booking.DoesNotExist:
+            return JsonResponse({})
+        route = SuggestedRoute.objects.filter(
+            ambulance_id=booking.ambulance_id,
+            status__in=["pending", "accepted"],
+        ).order_by("-created_at").first()
+    return JsonResponse(_route_dict(route) if route else {})
