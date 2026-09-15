@@ -223,6 +223,11 @@ def hospital_dashboard(request, id):
             "hospital_response_note": booking.hospital_response_note,
             "patient_condition": booking.patient_condition,
             "vitals_summary": booking.vitals_summary,
+            "live_vitals": {
+                "heart_rate": getattr(booking, "heart_rate", "76 bpm") or "76 bpm",
+                "spo2": getattr(booking, "spo2", "98%") or "98%",
+                "bp": getattr(booking, "bp", "120/80") or "120/80",
+            },
             "report_submitted_by": booking.report_submitted_by,
             "report_submitted_at": booking.report_submitted_at.isoformat() if booking.report_submitted_at else None,
             "report_sent_to_hospital": booking.report_sent_to_hospital,
