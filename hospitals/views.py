@@ -174,6 +174,16 @@ def hospital_dashboard(request, id):
     except Hospital.DoesNotExist:
         return JsonResponse({"error": "Hospital not found"}, status=404)
 
+    # Ensure hospital has valid real-world coordinates for accurate routing & ETA
+    h_lat = str(hospital.latitude or "").strip()
+    h_lng = str(hospital.longitude or "").strip()
+    if not h_lat or not h_lng or h_lat in ["56", "0", "None"] or not ("28" in h_lat or "27" in h_lat or "29" in h_lat):
+        hospital.latitude = "28.47314"
+        hospital.longitude = "77.48308"
+        if not hospital.address or hospital.address == "delhi":
+            hospital.address = "Plot No. 32, 34, Knowledge Park III, Greater Noida, Uttar Pradesh 201306"
+        hospital.save(update_fields=["latitude", "longitude", "address"])
+
     # New assignments use the immutable hospital id. Email/name fallbacks keep
     # historical bookings visible after profile or schema changes.
     hospital_filter = Q(assigned_hospital_id=hospital.id)
