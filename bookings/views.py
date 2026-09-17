@@ -205,6 +205,7 @@ def booking_to_dict(booking):
         "reassigned_at": _iso(booking.reassigned_at),
         "created_at": _iso(booking.created_at),
         "is_read": booking.is_read,
+        "is_user_selected_hospital": getattr(booking, "is_user_selected_hospital", False),
         "chat_thread_id": chat_thread.id if chat_thread else None,
     }
 
@@ -224,6 +225,11 @@ def booking_list(request):
 
     ambulance_id = _to_int(data.get("ambulance_id"))
     ambulance = Ambulance.objects.filter(id=ambulance_id).first()
+
+    user_hospital_id = _to_int(data.get("user_selected_hospital_id") or data.get("assigned_hospital_id"))
+    user_hospital = Hospital.objects.filter(id=user_hospital_id, is_active=True).first() if user_hospital_id > 0 else None
+    is_user_selected = _to_bool(data.get("is_user_selected_hospital")) or (user_hospital is not None)
+
     booking = Booking.objects.create(
         ambulance_id=ambulance_id,
         ambulance_number=data.get("ambulance_number") or (ambulance.ambulance_number if ambulance else ""),
@@ -243,7 +249,18 @@ def booking_list(request):
         pickup_landmark=str(data.get("pickup_landmark", "")).strip(),
         pickup_city=str(data.get("pickup_city", "")).strip(),
         pickup_district=str(data.get("pickup_district", "")).strip(),
-        destination=str(data.get("destination", "")).strip(),
+        destination=str(data.get("destination", "")).strip() or (user_hospital.name if user_hospital else ""),
+        is_user_selected_hospital=is_user_selected,
+        assigned_hospital_id=user_hospital.id if user_hospital else None,
+        assigned_hospital_name=user_hospital.name if user_hospital else "",
+        assigned_hospital_address=user_hospital.address if user_hospital else "",
+        assigned_hospital_contact=user_hospital.contact_number if user_hospital else "",
+        assigned_hospital_email=user_hospital.email if user_hospital else "",
+        hospital_assigned_at=timezone.now() if user_hospital else None,
+        hospital_response="pending" if user_hospital else "",
+        hospital_response_note="Awaiting hospital approval for user-selected booking." if user_hospital else "",
+        hospital_alert_sent=_to_bool(data.get("send_hospital_alert"), False),
+        hospital_alert_sent_at=timezone.now() if _to_bool(data.get("send_hospital_alert"), False) else None,
     )
     _ensure_chat_thread(booking)
     _push_system_message(booking, f"Booking #{booking.id} created and queued for dispatch.")
@@ -309,6 +326,9 @@ def booking_detail(request, id):
             Ambulance.objects.filter(id=old_ambulance_id, status="en_route").update(status="available")
         changed_messages.append(f"Ambulance {booking.ambulance_number} assigned to Booking #{booking.id}.")
 
+    if "is_user_selected_hospital" in data:
+        booking.is_user_selected_hospital = _to_bool(data["is_user_selected_hospital"])
+
     if "assign_hospital_id" in data:
         hospital = Hospital.objects.filter(id=_to_int(data["assign_hospital_id"], -1), is_active=True).first()
         if not hospital:
@@ -326,6 +346,15 @@ def booking_detail(request, id):
         booking.hospital_alert_sent = _to_bool(data.get("send_hospital_alert"), True)
         booking.hospital_alert_sent_at = timezone.now() if booking.hospital_alert_sent else None
         changed_messages.append(f"Hospital {hospital.name} assigned to Booking #{booking.id}.")
+    elif "send_hospital_alert" in data and booking.assigned_hospital_id:
+        should_send = _to_bool(data["send_hospital_alert"])
+        booking.hospital_alert_sent = should_send
+        booking.hospital_alert_sent_at = timezone.now() if should_send else None
+        if should_send:
+            booking.hospital_response = "pending"
+            booking.hospital_response_note = "Awaiting hospital readiness response."
+            booking.hospital_responded_at = None
+            changed_messages.append(f"Request alert sent to hospital {booking.assigned_hospital_name}.")
 
     if "send_to_driver" in data and ambulance_value is None:
         send_to_driver_val = _to_bool(data["send_to_driver"])

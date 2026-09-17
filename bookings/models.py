@@ -81,6 +81,7 @@ class Booking(models.Model):
     reassigned_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_read = models.BooleanField(default=False)
+    is_user_selected_hospital = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.ambulance_number} - {self.booked_by}"
