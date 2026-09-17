@@ -244,6 +244,10 @@ def hospital_dashboard(request, id):
             "report_sent_to_hospital_at": booking.report_sent_to_hospital_at.isoformat() if booking.report_sent_to_hospital_at else None,
             "driver_modified_report": booking.driver_modified_report,
             "insurance_status": booking.insurance_status,
+            "patient_reached": getattr(booking, "patient_reached", False),
+            "patient_reached_at": booking.patient_reached_at.isoformat() if getattr(booking, "patient_reached_at", None) else None,
+            "driver_accepted": getattr(booking, "driver_accepted", False),
+            "driver_status": getattr(booking, "driver_status", "pending"),
             "digital_handover": {
                 "patient_condition": booking.patient_condition,
                 "vitals_summary": booking.vitals_summary,

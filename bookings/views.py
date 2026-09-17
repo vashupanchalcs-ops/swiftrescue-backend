@@ -201,6 +201,11 @@ def booking_to_dict(booking):
         "driver_rejected_once": booking.driver_rejected_once,
         "driver_rejected_at": _iso(booking.driver_rejected_at),
         "driver_rejection_reason": booking.driver_rejection_reason,
+        "driver_accepted": getattr(booking, "driver_accepted", False),
+        "driver_accepted_at": _iso(booking.driver_accepted_at),
+        "driver_status": getattr(booking, "driver_status", "pending"),
+        "patient_reached": getattr(booking, "patient_reached", False),
+        "patient_reached_at": _iso(booking.patient_reached_at),
         "reassigned_due_to_unavailability": booking.reassigned_due_to_unavailability,
         "reassigned_at": _iso(booking.reassigned_at),
         "created_at": _iso(booking.created_at),
@@ -371,6 +376,12 @@ def booking_detail(request, id):
             if not booking.sent_to_driver:
                 booking.sent_to_driver = True
                 booking.sent_to_driver_at = timezone.now()
+                booking.driver_accepted = False
+                booking.driver_accepted_at = None
+                booking.driver_status = "pending"
+                booking.driver_rejected_once = False
+                booking.patient_reached = False
+                booking.patient_reached_at = None
                 Ambulance.objects.filter(id=booking.ambulance_id).update(status="en_route")
                 changed_messages.append(
                     f"Booking dispatched to driver {booking.driver}. Live route and traffic updates are now active."
@@ -381,6 +392,31 @@ def booking_detail(request, id):
                 booking.sent_to_driver_at = None
                 Ambulance.objects.filter(id=booking.ambulance_id).update(status="available")
                 changed_messages.append("Booking recalled from driver.")
+
+    if _to_bool(data.get("driver_accepted")) or data.get("driver_status") == "accepted":
+        booking.driver_accepted = True
+        booking.driver_status = "accepted"
+        booking.driver_accepted_at = timezone.now()
+        booking.driver_rejected_once = False
+        changed_messages.append(f"Booking #{booking.id} accepted by driver {booking.driver}.")
+
+    if _to_bool(data.get("cancel_driver_request")) or data.get("driver_status") == "rejected":
+        booking.sent_to_driver = False
+        booking.sent_to_driver_at = None
+        booking.driver_rejected_once = True
+        booking.driver_rejected_at = timezone.now()
+        booking.driver_rejection_reason = str(data.get("driver_rejection_reason", "Driver cancelled request")).strip()
+        booking.driver_status = "rejected"
+        booking.driver_accepted = False
+        booking.driver_accepted_at = None
+        Ambulance.objects.filter(id=booking.ambulance_id).update(status="available")
+        changed_messages.append(f"Driver {booking.driver} cancelled Booking #{booking.id}. Awaiting ambulance reassignment.")
+
+    if "patient_reached" in data:
+        booking.patient_reached = _to_bool(data["patient_reached"])
+        booking.patient_reached_at = timezone.now() if booking.patient_reached else None
+        if booking.patient_reached:
+            changed_messages.append(f"Hospital {booking.assigned_hospital_name} confirmed patient reached for Booking #{booking.id}.")
 
     if "status" in data:
         new_status = str(data["status"]).lower().strip()
