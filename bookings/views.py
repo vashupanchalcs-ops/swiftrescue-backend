@@ -211,6 +211,19 @@ def booking_to_dict(booking):
         "created_at": _iso(booking.created_at),
         "is_read": booking.is_read,
         "is_user_selected_hospital": getattr(booking, "is_user_selected_hospital", False),
+        "transfer_requested": getattr(booking, "transfer_requested", False),
+        "transfer_requested_at": _iso(getattr(booking, "transfer_requested_at", None)),
+        "transfer_status": getattr(booking, "transfer_status", ""),
+        "transfer_target_ambulance_id": getattr(booking, "transfer_target_ambulance_id", None),
+        "transfer_target_ambulance_number": getattr(booking, "transfer_target_ambulance_number", ""),
+        "transfer_from_ambulance_id": getattr(booking, "transfer_from_ambulance_id", None),
+        "transfer_from_ambulance_number": getattr(booking, "transfer_from_ambulance_number", ""),
+        "transfer_from_driver_email": getattr(booking, "transfer_from_driver_email", ""),
+        "transfer_from_driver_name": getattr(booking, "transfer_from_driver_name", ""),
+        "transferred_to_ambulance_id": getattr(booking, "transferred_to_ambulance_id", None),
+        "transferred_to_ambulance_number": getattr(booking, "transferred_to_ambulance_number", ""),
+        "transfer_approved_at": _iso(getattr(booking, "transfer_approved_at", None)),
+        "transfer_rejected_at": _iso(getattr(booking, "transfer_rejected_at", None)),
         "chat_thread_id": chat_thread.id if chat_thread else None,
     }
 
@@ -323,12 +336,25 @@ def booking_detail(request, id):
         booking.ambulance_number = ambulance.ambulance_number or ""
         booking.driver = ambulance.driver or ""
         booking.driver_contact = ambulance.driver_contact or ""
-        booking.sent_to_driver = _to_bool(data.get("send_to_driver"), False)
+        is_reassign = bool(booking.transfer_requested or booking.driver_rejected_once or data.get("reassign_ambulance_id"))
+        booking.sent_to_driver = _to_bool(data.get("send_to_driver"), True) if is_reassign else _to_bool(data.get("send_to_driver"), False)
         booking.sent_to_driver_at = timezone.now() if booking.sent_to_driver else None
+        if booking.transfer_requested:
+            booking.transferred_to_ambulance_id = ambulance.id
+            booking.transferred_to_ambulance_number = ambulance.ambulance_number or ""
+            booking.transfer_status = "completed"
+            booking.transfer_approved_at = timezone.now()
+        if is_reassign:
+            booking.driver_accepted = False
+            booking.driver_accepted_at = None
+            booking.driver_status = "pending"
+            booking.driver_rejected_once = False
+            booking.patient_reached = False
+            booking.patient_reached_at = None
         ambulance.status = "en_route"
         ambulance.save(update_fields=["status"])
         if old_ambulance_id and old_ambulance_id != ambulance.id:
-            Ambulance.objects.filter(id=old_ambulance_id, status="en_route").update(status="available")
+            Ambulance.objects.filter(id=old_ambulance_id).update(status="available")
         changed_messages.append(f"Ambulance {booking.ambulance_number} assigned to Booking #{booking.id}.")
 
     if "is_user_selected_hospital" in data:
@@ -417,6 +443,68 @@ def booking_detail(request, id):
         booking.patient_reached_at = timezone.now() if booking.patient_reached else None
         if booking.patient_reached:
             changed_messages.append(f"Hospital {booking.assigned_hospital_name} confirmed patient reached for Booking #{booking.id}.")
+
+    if _to_bool(data.get("request_ambulance_transfer")):
+        target_id = _to_int(data.get("target_ambulance_id") or data.get("transfer_target_ambulance_id"))
+        target_amb = Ambulance.objects.filter(id=target_id).first() if target_id else None
+        target_num = str(data.get("target_ambulance_number") or (target_amb.ambulance_number if target_amb else "")).strip()
+
+        booking.transfer_requested = True
+        booking.transfer_requested_at = timezone.now()
+        booking.transfer_status = "pending"
+        booking.transfer_from_ambulance_id = booking.ambulance_id
+        booking.transfer_from_ambulance_number = booking.ambulance_number
+        booking.transfer_from_driver_email = str(data.get("driver_email") or "").strip()
+        booking.transfer_from_driver_name = str(data.get("driver_name") or booking.driver).strip()
+        booking.transfer_target_ambulance_id = target_amb.id if target_amb else (target_id if target_id else None)
+        booking.transfer_target_ambulance_number = target_num
+        changed_messages.append(
+            f"Emergency transfer requested by driver {booking.driver}. Requesting switch to {target_num}."
+        )
+
+    if _to_bool(data.get("approve_ambulance_transfer")) or _to_bool(data.get("switch_ambulance_transfer")):
+        target_id = _to_int(data.get("target_ambulance_id") or booking.transfer_target_ambulance_id)
+        target_amb = Ambulance.objects.filter(id=target_id).first()
+        if not target_amb:
+            return JsonResponse({"error": "Target ambulance not found for transfer"}, status=400)
+
+        old_ambulance_id = booking.ambulance_id
+        booking.transfer_status = "approved"
+        booking.transfer_approved_at = timezone.now()
+        booking.transferred_to_ambulance_id = target_amb.id
+        booking.transferred_to_ambulance_number = target_amb.ambulance_number or ""
+
+        # Switch booking to the target ambulance
+        booking.ambulance_id = target_amb.id
+        booking.ambulance_number = target_amb.ambulance_number or ""
+        booking.driver = target_amb.driver or ""
+        booking.driver_contact = target_amb.driver_contact or ""
+
+        # Dispatch to the new driver with normal workflow
+        booking.sent_to_driver = True
+        booking.sent_to_driver_at = timezone.now()
+        booking.driver_accepted = False
+        booking.driver_accepted_at = None
+        booking.driver_status = "pending"
+        booking.driver_rejected_once = False
+        booking.patient_reached = False
+        booking.patient_reached_at = None
+
+        target_amb.status = "en_route"
+        target_amb.save(update_fields=["status"])
+        if old_ambulance_id and old_ambulance_id != target_amb.id:
+            Ambulance.objects.filter(id=old_ambulance_id).update(status="available")
+
+        changed_messages.append(
+            f"Admin approved transfer! Booking #{booking.id} switched to {target_amb.ambulance_number} (Driver: {target_amb.driver}). Dispatched to new driver."
+        )
+
+    if _to_bool(data.get("reject_ambulance_transfer")):
+        booking.transfer_status = "rejected"
+        booking.transfer_rejected_at = timezone.now()
+        changed_messages.append(
+            f"Admin rejected transfer to {booking.transfer_target_ambulance_number}. Awaiting alternate ambulance assignment."
+        )
 
     if "status" in data:
         new_status = str(data["status"]).lower().strip()
