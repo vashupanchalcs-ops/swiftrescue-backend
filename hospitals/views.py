@@ -203,7 +203,7 @@ def hospital_bed_detail(request, bed_id):
 
 @csrf_exempt
 def assign_bed_to_booking(request, hospital_id):
-    """POST: assign the first available general bed to a booking."""
+    """POST: assign a specific or first available bed to a booking."""
     import json as _json
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -221,19 +221,46 @@ def assign_bed_to_booking(request, hospital_id):
     except Booking.DoesNotExist:
         return JsonResponse({"error": "Booking not found"}, status=404)
 
-    # Find first available general bed
-    bed = HospitalBed.objects.filter(hospital_id=hospital_id, bed_type="general", status="available").first()
+    bed_id = data.get("bed_id")
+    bed = None
+    if bed_id:
+        bed = HospitalBed.objects.filter(id=bed_id).first()
     if not bed:
-        return JsonResponse({"error": "No available general beds"}, status=409)
+        bed_type_pref = str(data.get("bed_type", "general")).lower()
+        bed = HospitalBed.objects.filter(hospital_id=hospital_id, bed_type=bed_type_pref, status="available").first()
+    if not bed:
+        # Fallback to any available bed in hospital
+        bed = HospitalBed.objects.filter(hospital_id=hospital_id, status="available").first()
+    if not bed:
+        return JsonResponse({"error": "No available bed found in this hospital"}, status=409)
 
-    # Assign
+    # If this booking already held another bed (e.g. switching to ICU or different bed), free it
+    if booking.assigned_bed_id and booking.assigned_bed_id != bed.id:
+        old_bed = HospitalBed.objects.filter(id=booking.assigned_bed_id).first()
+        if old_bed:
+            old_bed.status = "available"
+            old_bed.assigned_booking_id = None
+            old_bed.patient_name = ""
+            old_bed.patient_age = ""
+            old_bed.patient_gender = ""
+            old_bed.blood_group = ""
+            old_bed.patient_phone = ""
+            old_bed.emergency_contact = ""
+            old_bed.medical_condition = ""
+            old_bed.vitals_summary = ""
+            old_bed.attending_doctor = ""
+            old_bed.assigned_staff_json = "[]"
+            old_bed.admission_time = None
+            old_bed.save()
+
+    # Assign target bed
     bed.status = "reserved"
-    bed.assigned_booking_id = booking_id
-    bed.patient_name = booking.patient_name
+    bed.assigned_booking_id = booking.id
+    bed.patient_name = booking.patient_name or booking.booked_by or "Emergency Intake"
     bed.patient_age = booking.patient_age
     bed.patient_gender = booking.patient_gender
     bed.patient_phone = booking.patient_contact_number
-    bed.medical_condition = booking.patient_condition
+    bed.medical_condition = booking.patient_condition or ("Critical Care Required" if bed.bed_type == "icu" else "General Inpatient Care")
     bed.vitals_summary = booking.vitals_summary
     bed.attending_doctor = booking.assigned_doctor_names
     bed.admission_time = timezone.now()
