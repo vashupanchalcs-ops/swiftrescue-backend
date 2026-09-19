@@ -548,6 +548,18 @@ def booking_detail(request, id):
         Ambulance.objects.filter(id=booking.ambulance_id).update(status="available")
         changed_messages.append(f"Driver completed Booking #{booking.id}.")
 
+    if "icu_required" in data:
+        booking.icu_required = _to_bool(data["icu_required"])
+        if booking.icu_required:
+            booking.icu_requested_at = timezone.now()
+            changed_messages.append(f"🚨 ICU bed urgently requested for Booking #{booking.id}.")
+    if "assigned_bed_id" in data:
+        booking.assigned_bed_id = _to_int(data["assigned_bed_id"]) or None
+    if "assigned_bed_number" in data:
+        booking.assigned_bed_number = str(data["assigned_bed_number"]).strip()
+    if "assigned_bed_type" in data:
+        booking.assigned_bed_type = str(data["assigned_bed_type"]).strip()
+
     if "assigned_doctors" in data or "assign_doctors" in data:
         from hospitals.models import HospitalStaff
         doctors_input = data.get("assigned_doctors") or data.get("assign_doctors") or []
@@ -622,6 +634,7 @@ def booking_detail(request, id):
         booking.report_sent_to_hospital_at = timezone.now()
         booking.driver_report_sent_at = timezone.now()
 
+        # Send admin notification email (always)
         _send_mail_background(
             subject=f"Patient Condition Report - Booking #{booking.id}",
             message=f"""Patient report submitted by driver.
@@ -640,6 +653,8 @@ Hospital: {booking.assigned_hospital_name or booking.destination or '-'}
             recipient_list=["vashupanchal.cs@gmail.com"],
             label="Admin patient report email",
         )
+        # forward_patient_report: send_to_hospital flag from the driver (defaults True)
+        forward_patient_report = _to_bool(patient_report.get("send_to_hospital"), True)
         if forward_patient_report and booking.assigned_hospital_email:
             _send_mail_background(
                 subject=f"Patient Clinical Report - Booking #{booking.id}",
