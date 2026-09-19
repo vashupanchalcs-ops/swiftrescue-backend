@@ -90,6 +90,8 @@ class HospitalStaff(models.Model):
     shift               = models.CharField(max_length=20, choices=SHIFT_CHOICES, default="day")
     is_on_call          = models.BooleanField(default=False)
     is_active           = models.BooleanField(default=True)
+    is_busy             = models.BooleanField(default=False)
+    assigned_booking_id = models.IntegerField(null=True, blank=True)
     joined_on           = models.DateField(null=True, blank=True)
     notes               = models.TextField(blank=True, default="")
     created_at          = models.DateTimeField(default=timezone.now, editable=False)

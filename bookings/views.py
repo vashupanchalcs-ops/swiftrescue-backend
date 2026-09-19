@@ -224,6 +224,11 @@ def booking_to_dict(booking):
         "transferred_to_ambulance_number": getattr(booking, "transferred_to_ambulance_number", ""),
         "transfer_approved_at": _iso(getattr(booking, "transfer_approved_at", None)),
         "transfer_rejected_at": _iso(getattr(booking, "transfer_rejected_at", None)),
+        "assigned_doctors_json": getattr(booking, "assigned_doctors_json", "[]"),
+        "assigned_doctor_names": getattr(booking, "assigned_doctor_names", ""),
+        "assigned_doctor_specializations": getattr(booking, "assigned_doctor_specializations", ""),
+        "assigned_doctor_contacts": getattr(booking, "assigned_doctor_contacts", ""),
+        "doctors_assigned_at": _iso(getattr(booking, "doctors_assigned_at", None)),
         "chat_thread_id": chat_thread.id if chat_thread else None,
     }
 
@@ -513,6 +518,8 @@ def booking_detail(request, id):
             return JsonResponse({"error": f"Invalid status. Use: {sorted(valid_statuses)}"}, status=400)
         booking.status = new_status
         if new_status in {"completed", "cancelled"}:
+            from hospitals.models import HospitalStaff
+            HospitalStaff.objects.filter(assigned_booking_id=booking.id).update(is_active=True, is_busy=False, assigned_booking_id=None)
             Ambulance.objects.filter(id=booking.ambulance_id).update(status="available")
             if booking.hospital_response == "ready" and booking.assigned_hospital_id:
                 h = Hospital.objects.filter(id=booking.assigned_hospital_id).first()
@@ -528,11 +535,72 @@ def booking_detail(request, id):
         changed_messages.append(f"Booking status changed to {new_status}.")
 
     if _to_bool(data.get("driver_task_complete")):
+        from hospitals.models import HospitalStaff
+        HospitalStaff.objects.filter(assigned_booking_id=booking.id).update(is_active=True, is_busy=False, assigned_booking_id=None)
         booking.driver_task_completed = True
         booking.driver_task_completed_at = timezone.now()
         booking.status = "completed"
         Ambulance.objects.filter(id=booking.ambulance_id).update(status="available")
         changed_messages.append(f"Driver completed Booking #{booking.id}.")
+
+    if "assigned_doctors" in data or "assign_doctors" in data:
+        from hospitals.models import HospitalStaff
+        doctors_input = data.get("assigned_doctors") or data.get("assign_doctors") or []
+        if isinstance(doctors_input, str):
+            try:
+                doctors_input = json.loads(doctors_input)
+            except Exception:
+                doctors_input = []
+        if not isinstance(doctors_input, list):
+            doctors_input = [doctors_input] if doctors_input else []
+        
+        doctors_input = doctors_input[:3]
+        HospitalStaff.objects.filter(assigned_booking_id=booking.id).update(is_active=True, is_busy=False, assigned_booking_id=None)
+        
+        doctor_ids = []
+        names = []
+        specs = []
+        contacts = []
+        json_list = []
+        
+        for doc in doctors_input:
+            if isinstance(doc, dict):
+                d_id = _to_int(doc.get("id"))
+                d_name = str(doc.get("full_name") or doc.get("name") or "").strip()
+                d_spec = str(doc.get("specialization") or doc.get("spec") or "").strip()
+                d_phone = str(doc.get("contact_number") or doc.get("contact") or doc.get("phone") or "").strip()
+            else:
+                d_id = _to_int(doc)
+                d_name, d_spec, d_phone = "", "", ""
+                
+            staff_obj = HospitalStaff.objects.filter(id=d_id).first() if d_id > 0 else None
+            if staff_obj:
+                d_name = d_name or staff_obj.full_name
+                d_spec = d_spec or staff_obj.specialization
+                d_phone = d_phone or staff_obj.contact_number
+                staff_obj.is_active = False
+                staff_obj.is_busy = True
+                staff_obj.assigned_booking_id = booking.id
+                staff_obj.save()
+            
+            if d_name:
+                doctor_ids.append(d_id)
+                names.append(d_name)
+                specs.append(d_spec)
+                contacts.append(d_phone)
+                json_list.append({
+                    "id": d_id,
+                    "full_name": d_name,
+                    "specialization": d_spec,
+                    "contact_number": d_phone,
+                })
+        
+        booking.assigned_doctors_json = json.dumps(json_list)
+        booking.assigned_doctor_names = ", ".join(names)
+        booking.assigned_doctor_specializations = ", ".join(specs)
+        booking.assigned_doctor_contacts = ", ".join(contacts)
+        booking.doctors_assigned_at = timezone.now()
+        changed_messages.append(f"{len(json_list)} doctor(s) assigned to Booking #{booking.id}: {booking.assigned_doctor_names}.")
 
     patient_report = data.get("patient_report")
     if isinstance(patient_report, dict):
@@ -545,13 +613,9 @@ def booking_detail(request, id):
         booking.vitals_summary = str(patient_report.get("vitals_summary", "")).strip()
         booking.report_submitted_by = str(patient_report.get("submitted_by", "")).strip() or booking.driver or "Driver Team"
         booking.report_submitted_at = timezone.now()
-        forward_patient_report = _to_bool(patient_report.get("send_to_hospital")) or _to_bool(
-            patient_report.get("forward_to_hospital")
-        )
-        if forward_patient_report and booking.assigned_hospital_email:
-            booking.report_sent_to_hospital = True
-            booking.report_sent_to_hospital_at = timezone.now()
-            booking.driver_report_sent_at = timezone.now()
+        booking.report_sent_to_hospital = True
+        booking.report_sent_to_hospital_at = timezone.now()
+        booking.driver_report_sent_at = timezone.now()
 
         _send_mail_background(
             subject=f"Patient Condition Report - Booking #{booking.id}",

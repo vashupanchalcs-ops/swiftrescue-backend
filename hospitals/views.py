@@ -99,6 +99,8 @@ def staff_to_dict(member):
         "shift": member.shift,
         "is_on_call": member.is_on_call,
         "is_active": member.is_active,
+        "is_busy": getattr(member, "is_busy", False),
+        "assigned_booking_id": getattr(member, "assigned_booking_id", None),
         "joined_on": member.joined_on.isoformat() if member.joined_on else None,
         "notes": member.notes,
     }
@@ -248,6 +250,11 @@ def hospital_dashboard(request, id):
             "patient_reached_at": booking.patient_reached_at.isoformat() if getattr(booking, "patient_reached_at", None) else None,
             "driver_accepted": getattr(booking, "driver_accepted", False),
             "driver_status": getattr(booking, "driver_status", "pending"),
+            "assigned_doctors_json": getattr(booking, "assigned_doctors_json", "[]"),
+            "assigned_doctor_names": getattr(booking, "assigned_doctor_names", ""),
+            "assigned_doctor_specializations": getattr(booking, "assigned_doctor_specializations", ""),
+            "assigned_doctor_contacts": getattr(booking, "assigned_doctor_contacts", ""),
+            "doctors_assigned_at": booking.doctors_assigned_at.isoformat() if getattr(booking, "doctors_assigned_at", None) else None,
             "digital_handover": {
                 "patient_condition": booking.patient_condition,
                 "vitals_summary": booking.vitals_summary,
