@@ -94,23 +94,33 @@ def get_route(request):
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
     try:
-        data   = json.loads(request.body)
-        pickup = f"{data['pickup_lat']},{data['pickup_lng']}"
-        hosp   = f"{data['hospital_lat']},{data['hospital_lng']}"
-        amb    = f"{data['ambulance_lat']},{data['ambulance_lng']}" if data.get("ambulance_lat") else None
+        data = json.loads(request.body)
     except (KeyError, json.JSONDecodeError) as e:
-        return JsonResponse({"error": f"Missing: {e}"}, status=400)
+        return JsonResponse({"error": f"Invalid JSON: {e}"}, status=400)
 
-    origin, waypoints, destination = (amb, [pickup], hosp) if amb else (pickup, None, hosp)
+    origin_lat = data.get("origin_lat") or data.get("ambulance_lat") or data.get("pickup_lat")
+    origin_lng = data.get("origin_lng") or data.get("ambulance_lng") or data.get("pickup_lng")
+    dest_lat = data.get("dest_lat") or data.get("hospital_lat") or data.get("pickup_lat")
+    dest_lng = data.get("dest_lng") or data.get("hospital_lng") or data.get("pickup_lng")
+
+    if origin_lat is None or origin_lng is None or dest_lat is None or dest_lng is None:
+        return JsonResponse({"error": "Missing coordinates: origin_lat, origin_lng, dest_lat, dest_lng required."}, status=400)
+
     try:
-        api_data = _directions(origin, destination, waypoints)
+        from routing_provider import default_provider
+        route_data = default_provider.calculate_route(
+            origin_lat=float(origin_lat),
+            origin_lng=float(origin_lng),
+            dest_lat=float(dest_lat),
+            dest_lng=float(dest_lng),
+            travel_mode=data.get("travel_mode", "car"),
+            max_alternatives=int(data.get("max_alternatives", 1)),
+        )
+        return JsonResponse(route_data)
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=502)
-    if api_data.get("status") != "OK":
-        return JsonResponse({"error": api_data.get("status"), "detail": api_data.get("error_message","")}, status=400)
-
-    routes = sorted([_parse_route(r) for r in api_data["routes"]], key=lambda r: r["duration_traffic_sec"])
-    return JsonResponse({"best_route": routes[0], "alternatives": routes[1:], "total_routes": len(routes)})
+        return JsonResponse({"error": str(e)}, status=500)
 
 
 @csrf_exempt
