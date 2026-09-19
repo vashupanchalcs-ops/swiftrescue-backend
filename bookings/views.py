@@ -229,6 +229,11 @@ def booking_to_dict(booking):
         "assigned_doctor_specializations": getattr(booking, "assigned_doctor_specializations", ""),
         "assigned_doctor_contacts": getattr(booking, "assigned_doctor_contacts", ""),
         "doctors_assigned_at": _iso(getattr(booking, "doctors_assigned_at", None)),
+        "assigned_bed_id": getattr(booking, "assigned_bed_id", None),
+        "assigned_bed_number": getattr(booking, "assigned_bed_number", ""),
+        "assigned_bed_type": getattr(booking, "assigned_bed_type", "general"),
+        "icu_required": getattr(booking, "icu_required", False),
+        "icu_requested_at": _iso(getattr(booking, "icu_requested_at", None)),
         "chat_thread_id": chat_thread.id if chat_thread else None,
     }
 

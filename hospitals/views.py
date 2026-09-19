@@ -3,7 +3,7 @@ from django.http import JsonResponse
 from django.db.models import Q
 from django.utils import timezone
 from ambulance.models import Ambulance
-from hospitals.models import Hospital, HospitalStaff
+from hospitals.models import Hospital, HospitalStaff, HospitalBed
 from bookings.models import Booking
 import json
 
@@ -104,6 +104,216 @@ def staff_to_dict(member):
         "joined_on": member.joined_on.isoformat() if member.joined_on else None,
         "notes": member.notes,
     }
+
+
+
+
+def bed_to_dict(bed):
+    return {
+        "id": bed.id,
+        "hospital_id": bed.hospital_id,
+        "bed_number": bed.bed_number,
+        "bed_type": bed.bed_type,
+        "status": bed.status,
+        "wing": bed.wing,
+        "assigned_booking_id": bed.assigned_booking_id,
+        "patient_name": bed.patient_name,
+        "patient_age": bed.patient_age,
+        "patient_gender": bed.patient_gender,
+        "blood_group": bed.blood_group,
+        "patient_phone": bed.patient_phone,
+        "emergency_contact": bed.emergency_contact,
+        "medical_condition": bed.medical_condition,
+        "vitals_summary": bed.vitals_summary,
+        "attending_doctor": bed.attending_doctor,
+        "assigned_staff_json": bed.assigned_staff_json,
+        "admission_time": bed.admission_time.isoformat() if bed.admission_time else None,
+        "last_status_update": bed.last_status_update.isoformat() if bed.last_status_update else None,
+        "created_at": bed.created_at.isoformat() if bed.created_at else None,
+    }
+
+
+@csrf_exempt
+def hospital_beds(request, hospital_id):
+    """GET all beds for a hospital (auto-seeds if none). PATCH a single bed."""
+    try:
+        hospital = Hospital.objects.get(id=hospital_id)
+    except Hospital.DoesNotExist:
+        return JsonResponse({"error": "Hospital not found"}, status=404)
+
+    if request.method == "GET":
+        beds = HospitalBed.objects.filter(hospital=hospital)
+        # Auto-seed beds if none exist
+        if not beds.exists():
+            total_general = max(1, hospital.total_beds - hospital.icu_beds)
+            total_icu = max(0, hospital.icu_beds)
+            created = []
+            for i in range(1, total_general + 1):
+                b = HospitalBed.objects.create(
+                    hospital=hospital,
+                    bed_number=f"G-{i:03d}",
+                    bed_type="general",
+                    status="available",
+                    wing="General Ward"
+                )
+                created.append(b)
+            for i in range(1, total_icu + 1):
+                b = HospitalBed.objects.create(
+                    hospital=hospital,
+                    bed_number=f"ICU-{i:03d}",
+                    bed_type="icu",
+                    status="available",
+                    wing="ICU"
+                )
+                created.append(b)
+            return JsonResponse([bed_to_dict(b) for b in created], safe=False)
+        return JsonResponse([bed_to_dict(b) for b in beds], safe=False)
+
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@csrf_exempt
+def hospital_bed_detail(request, bed_id):
+    """PATCH a single bed's fields."""
+    try:
+        bed = HospitalBed.objects.get(id=bed_id)
+    except HospitalBed.DoesNotExist:
+        return JsonResponse({"error": "Bed not found"}, status=404)
+
+    if request.method == "PATCH":
+        import json as _json
+        try:
+            data = _json.loads(request.body)
+        except Exception:
+            data = {}
+        allowed = [
+            "status", "wing", "assigned_booking_id", "patient_name", "patient_age",
+            "patient_gender", "blood_group", "patient_phone", "emergency_contact",
+            "medical_condition", "vitals_summary", "attending_doctor",
+            "assigned_staff_json", "admission_time"
+        ]
+        for field in allowed:
+            if field in data:
+                setattr(bed, field, data[field])
+        bed.save()
+        return JsonResponse(bed_to_dict(bed))
+
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@csrf_exempt
+def assign_bed_to_booking(request, hospital_id):
+    """POST: assign the first available general bed to a booking."""
+    import json as _json
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    try:
+        data = _json.loads(request.body)
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    booking_id = data.get("booking_id")
+    if not booking_id:
+        return JsonResponse({"error": "booking_id required"}, status=400)
+
+    try:
+        booking = Booking.objects.get(id=booking_id)
+    except Booking.DoesNotExist:
+        return JsonResponse({"error": "Booking not found"}, status=404)
+
+    # Find first available general bed
+    bed = HospitalBed.objects.filter(hospital_id=hospital_id, bed_type="general", status="available").first()
+    if not bed:
+        return JsonResponse({"error": "No available general beds"}, status=409)
+
+    # Assign
+    bed.status = "reserved"
+    bed.assigned_booking_id = booking_id
+    bed.patient_name = booking.patient_name
+    bed.patient_age = booking.patient_age
+    bed.patient_gender = booking.patient_gender
+    bed.patient_phone = booking.patient_contact_number
+    bed.medical_condition = booking.patient_condition
+    bed.vitals_summary = booking.vitals_summary
+    bed.attending_doctor = booking.assigned_doctor_names
+    bed.admission_time = timezone.now()
+    bed.save()
+
+    # Update booking
+    booking.assigned_bed_id = bed.id
+    booking.assigned_bed_number = bed.bed_number
+    booking.assigned_bed_type = bed.bed_type
+    booking.save()
+
+    return JsonResponse({"bed": bed_to_dict(bed), "booking_id": booking_id})
+
+
+@csrf_exempt
+def switch_to_icu_bed(request, hospital_id):
+    """POST: switch patient from general bed to available ICU bed."""
+    import json as _json
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    try:
+        data = _json.loads(request.body)
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    booking_id = data.get("booking_id")
+    try:
+        booking = Booking.objects.get(id=booking_id)
+    except Booking.DoesNotExist:
+        return JsonResponse({"error": "Booking not found"}, status=404)
+
+    # Get current general bed
+    current_bed = HospitalBed.objects.filter(id=booking.assigned_bed_id).first() if booking.assigned_bed_id else None
+
+    # Find available ICU bed
+    icu_bed = HospitalBed.objects.filter(hospital_id=hospital_id, bed_type="icu", status="available").first()
+    if not icu_bed:
+        return JsonResponse({"error": "No available ICU beds"}, status=409)
+
+    # Copy patient info to ICU bed
+    if current_bed:
+        icu_bed.patient_name = current_bed.patient_name
+        icu_bed.patient_age = current_bed.patient_age
+        icu_bed.patient_gender = current_bed.patient_gender
+        icu_bed.blood_group = current_bed.blood_group
+        icu_bed.patient_phone = current_bed.patient_phone
+        icu_bed.emergency_contact = current_bed.emergency_contact
+        icu_bed.medical_condition = current_bed.medical_condition
+        icu_bed.vitals_summary = current_bed.vitals_summary
+        icu_bed.attending_doctor = current_bed.attending_doctor
+        icu_bed.assigned_staff_json = current_bed.assigned_staff_json
+        icu_bed.admission_time = current_bed.admission_time
+
+        # Free the general bed
+        current_bed.status = "available"
+        current_bed.assigned_booking_id = None
+        current_bed.patient_name = ""
+        current_bed.patient_age = ""
+        current_bed.patient_gender = ""
+        current_bed.blood_group = ""
+        current_bed.patient_phone = ""
+        current_bed.emergency_contact = ""
+        current_bed.medical_condition = ""
+        current_bed.vitals_summary = ""
+        current_bed.attending_doctor = ""
+        current_bed.assigned_staff_json = "[]"
+        current_bed.admission_time = None
+        current_bed.save()
+
+    icu_bed.status = "occupied"
+    icu_bed.assigned_booking_id = booking_id
+    icu_bed.save()
+
+    # Update booking
+    booking.assigned_bed_id = icu_bed.id
+    booking.assigned_bed_number = icu_bed.bed_number
+    booking.assigned_bed_type = icu_bed.bed_type
+    booking.save()
+
+    return JsonResponse({"icu_bed": bed_to_dict(icu_bed), "freed_bed": bed_to_dict(current_bed) if current_bed else None})
 
 
 STAFF_MUTABLE_FIELDS = (
@@ -255,6 +465,11 @@ def hospital_dashboard(request, id):
             "assigned_doctor_specializations": getattr(booking, "assigned_doctor_specializations", ""),
             "assigned_doctor_contacts": getattr(booking, "assigned_doctor_contacts", ""),
             "doctors_assigned_at": booking.doctors_assigned_at.isoformat() if getattr(booking, "doctors_assigned_at", None) else None,
+            "assigned_bed_id": getattr(booking, "assigned_bed_id", None),
+            "assigned_bed_number": getattr(booking, "assigned_bed_number", ""),
+            "assigned_bed_type": getattr(booking, "assigned_bed_type", "general"),
+            "icu_required": getattr(booking, "icu_required", False),
+            "icu_requested_at": booking.icu_requested_at.isoformat() if getattr(booking, "icu_requested_at", None) else None,
             "digital_handover": {
                 "patient_condition": booking.patient_condition,
                 "vitals_summary": booking.vitals_summary,

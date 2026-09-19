@@ -104,3 +104,47 @@ class HospitalStaff(models.Model):
 
     def __str__(self):
         return f"{self.full_name} - {self.hospital.name}"
+
+
+class HospitalBed(models.Model):
+    STATUS_CHOICES = [
+        ("available", "Available"),
+        ("reserved",  "Reserved"),
+        ("occupied",  "Occupied"),
+    ]
+    BED_TYPE_CHOICES = [
+        ("general", "General"),
+        ("icu",     "ICU"),
+    ]
+
+    hospital            = models.ForeignKey(Hospital, on_delete=models.CASCADE, related_name="beds")
+    bed_number          = models.CharField(max_length=50, db_index=True)
+    bed_type            = models.CharField(max_length=20, choices=BED_TYPE_CHOICES, default="general")
+    status              = models.CharField(max_length=20, choices=STATUS_CHOICES, default="available")
+    wing                = models.CharField(max_length=80, blank=True, default="General Ward • Wing B")
+    
+    # Patient & Admission details
+    assigned_booking_id = models.IntegerField(null=True, blank=True)
+    patient_name        = models.CharField(max_length=150, blank=True, default="")
+    patient_age         = models.CharField(max_length=20, blank=True, default="")
+    patient_gender      = models.CharField(max_length=20, blank=True, default="")
+    blood_group         = models.CharField(max_length=20, blank=True, default="O-Negative (O-)")
+    patient_phone       = models.CharField(max_length=30, blank=True, default="")
+    emergency_contact   = models.CharField(max_length=200, blank=True, default="")
+    medical_condition   = models.TextField(blank=True, default="")
+    vitals_summary      = models.TextField(blank=True, default="")
+    attending_doctor    = models.CharField(max_length=250, blank=True, default="")
+    assigned_staff_json = models.TextField(blank=True, default="[]")
+    
+    admission_time      = models.DateTimeField(null=True, blank=True)
+    last_status_update  = models.DateTimeField(default=timezone.now)
+    created_at          = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at          = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["bed_type", "bed_number"]
+        verbose_name = "Hospital Bed"
+        verbose_name_plural = "Hospital Beds"
+
+    def __str__(self):
+        return f"{self.bed_number} ({self.bed_type.upper()}) - {self.hospital.name} [{self.status}]"
