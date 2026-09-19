@@ -732,6 +732,7 @@ def update_route_status(request, route_id):
     return JsonResponse(route_to_dict(route))
 
 
+
 @csrf_exempt
 def get_suggested_routes(request, ambulance_id):
     if request.method != "GET":
@@ -751,3 +752,51 @@ def get_active_routes(request):
         status__in=["pending", "accepted"]
     ).select_related("ambulance")
     return JsonResponse([route_to_dict(r) for r in routes], safe=False)
+
+
+@csrf_exempt
+def sync_user(request):
+    """
+    POST: Store logged-in user details in the backend database.
+    Only users (role: 'user') are stored.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    try:
+        data = json.loads(request.body)
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    email = str(data.get("email", "")).strip().lower()
+    name = str(data.get("name", "")).strip()
+    role = str(data.get("role", "user")).strip().lower()
+
+    if not email:
+        return JsonResponse({"error": "Email is required"}, status=400)
+
+    if role != "user":
+        return JsonResponse({"message": "Non-user role skipped", "role": role})
+
+    from django.contrib.auth.models import User
+    from django.utils import timezone
+
+    user, created = User.objects.get_or_create(username=email, defaults={"email": email, "first_name": name})
+    if not created:
+        if name and user.first_name != name:
+            user.first_name = name
+        if email and user.email != email:
+            user.email = email
+    user.last_login = timezone.now()
+    user.save()
+
+    return JsonResponse({
+        "success": True,
+        "created": created,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "name": user.first_name,
+            "last_login": user.last_login.isoformat() if user.last_login else None,
+        }
+    })

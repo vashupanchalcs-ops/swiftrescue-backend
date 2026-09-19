@@ -22,6 +22,7 @@ urlpatterns = [
     path("api/send-phone-otp/",   views.send_phone_otp),
     path("api/verify-phone-otp/", views.verify_phone_otp),
     path("api/auth/contract-validate/", views.validate_contract_access),
+    path("api/auth/sync-user/",         views.sync_user),
     path("api/logout/",           views.logout_view),
 
     # ── AMBULANCE — static paths BEFORE <int:id> ────
