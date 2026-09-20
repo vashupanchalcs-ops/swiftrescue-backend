@@ -132,9 +132,16 @@ def _thread_to_dict(thread):
     }
 
 
-def booking_to_dict(booking):
-    ambulance = Ambulance.objects.filter(id=booking.ambulance_id).first()
-    chat_thread = BookingChatThread.objects.filter(booking=booking).only("id").first()
+_LOOKUP_NOT_PROVIDED = object()
+
+
+def booking_to_dict(booking, *, ambulance=_LOOKUP_NOT_PROVIDED, chat_thread=_LOOKUP_NOT_PROVIDED):
+    # List endpoints pass bulk-fetched related rows to avoid one database
+    # query per booking. Detail endpoints keep the lazy lookup behaviour.
+    if ambulance is _LOOKUP_NOT_PROVIDED:
+        ambulance = Ambulance.objects.filter(id=booking.ambulance_id).first()
+    if chat_thread is _LOOKUP_NOT_PROVIDED:
+        chat_thread = BookingChatThread.objects.filter(booking=booking).only("id").first()
     return {
         "id": booking.id,
         "ambulance_id": booking.ambulance_id,
@@ -242,7 +249,25 @@ def booking_to_dict(booking):
 def booking_list(request):
     if request.method == "GET":
         bookings = Booking.objects.all().order_by("-created_at")
-        return JsonResponse([booking_to_dict(booking) for booking in bookings], safe=False)
+        booking_rows = list(bookings)
+        ambulance_ids = {booking.ambulance_id for booking in booking_rows if booking.ambulance_id}
+        booking_ids = {booking.id for booking in booking_rows}
+        ambulance_map = {
+            ambulance.id: ambulance
+            for ambulance in Ambulance.objects.filter(id__in=ambulance_ids)
+        }
+        thread_map = {
+            thread.booking_id: thread
+            for thread in BookingChatThread.objects.filter(booking_id__in=booking_ids).only("id", "booking_id")
+        }
+        return JsonResponse([
+            booking_to_dict(
+                booking,
+                ambulance=ambulance_map.get(booking.ambulance_id),
+                chat_thread=thread_map.get(booking.id),
+            )
+            for booking in booking_rows
+        ], safe=False)
 
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)

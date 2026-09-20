@@ -1,5 +1,5 @@
 from django.views.decorators.csrf import csrf_exempt
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.core.mail import send_mail
 from django.conf import settings
 from django.core.cache import cache
@@ -128,6 +128,17 @@ def send_otp_email(recipient, otp):
 
 def home(request):
     return JsonResponse({"message": "SwiftRescue Backend Running"})
+
+
+def favicon(request):
+    """Return a tiny inline icon so browser probes do not create 404 log noise."""
+    return HttpResponse(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+        '<rect width="64" height="64" rx="14" fill="#126f1e"/>'
+        '<path d="M13 34h10l5-15 8 28 5-13h10" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>'
+        '</svg>',
+        content_type="image/svg+xml",
+    )
 
 
 @csrf_exempt

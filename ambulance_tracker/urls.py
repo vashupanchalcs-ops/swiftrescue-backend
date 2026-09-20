@@ -1,5 +1,4 @@
 from django.contrib import admin
-from django.contrib import admin
 from django.conf import settings
 from django.conf.urls.static import static
 from django.urls import path, include
@@ -18,6 +17,7 @@ from ambulance.tracking_views import (
 
 urlpatterns = [
     path("", views.home),
+    path("favicon.ico", views.favicon),
     path("admin/", admin.site.urls),
 
     # ── OTP & AUTH ──────────────────────────────────
