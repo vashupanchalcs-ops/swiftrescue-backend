@@ -22,6 +22,17 @@ class Command(BaseCommand):
             self.stdout.write("Administrator already exists; no account changes made.")
             return
 
+        # Preserve the existing deployment administrator when the configured
+        # username is changed to match the legacy admin account name.
+        existing = user_model.objects.filter(email__iexact=email).first()
+        if existing:
+            existing.username = username
+            existing.is_staff = True
+            existing.is_superuser = True
+            existing.save(update_fields=["username", "is_staff", "is_superuser"])
+            self.stdout.write(self.style.SUCCESS(f"Administrator renamed: {existing.username}"))
+            return
+
         user = user_model.objects.create_superuser(
             username=username,
             email=email,
