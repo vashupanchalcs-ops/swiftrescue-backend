@@ -1,1 +1,1 @@
-web: gunicorn ambulance_tracker.wsgi:application --bind 0.0.0.0:$PORT
+web: python manage.py migrate --noinput && daphne -b 0.0.0.0 -p $PORT ambulance_tracker.asgi:application

@@ -148,6 +148,13 @@ def send_otp(request):
             print(f"[OTP] Email sent to {email}", flush=True)
         except Exception as e:
             print(f"[OTP] Email failed: {e}", flush=True)
+            if settings.DEBUG:
+                return JsonResponse({
+                    "status": "otp_sent",
+                    "delivery": "console",
+                    "dev_otp": otp,
+                    "message": "Gmail SMTP failed locally; use the development OTP shown on screen.",
+                })
             return JsonResponse({"status": "error", "message": "Email service unavailable"}, status=503)
 
         return JsonResponse({"status": "otp_sent"})

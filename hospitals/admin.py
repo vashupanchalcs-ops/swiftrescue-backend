@@ -25,12 +25,12 @@ class HospitalAdmin(admin.ModelAdmin):
 @admin.register(HospitalStaff)
 class HospitalStaffAdmin(admin.ModelAdmin):
     list_display = (
-        "full_name", "hospital", "role", "specialization", "shift",
+        "full_name", "hospital", "role", "staff_id", "registration_number", "specialization", "shift",
         "is_on_call", "is_active", "contact_number",
     )
     list_filter = ("role", "shift", "is_on_call", "is_active", "hospital")
     search_fields = (
-        "full_name", "specialization", "registration_number", "contact_number",
+        "full_name", "staff_id", "specialization", "registration_number", "contact_number",
         "email", "hospital__name",
     )
     list_editable = ("shift", "is_on_call", "is_active")

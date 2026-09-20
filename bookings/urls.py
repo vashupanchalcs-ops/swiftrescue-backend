@@ -8,6 +8,8 @@ urlpatterns = [
     path("unread/", views.unread_count),
     path("mark-read/", views.mark_all_read),
     path("voice/call-alert/", views.voice_call_alert),
+    path("driver-assigned/", views.driver_assigned_bookings),
+    path("<int:booking_id>/photos/", views.booking_photos),
     path("chat/threads/", views.chat_threads),
     path("chat/threads/<int:thread_id>/messages/", views.chat_messages),
     path("chat/threads/<int:thread_id>/presence/", views.chat_presence),

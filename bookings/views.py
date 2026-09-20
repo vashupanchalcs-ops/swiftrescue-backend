@@ -7,9 +7,9 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from ambulance.models import Ambulance
-from hospitals.models import Hospital
+from hospitals.models import Hospital, HospitalStaff
 
-from .models import Booking, BookingChatMessage, BookingChatThread, VoiceBookingCall
+from .models import Booking, BookingChatMessage, BookingChatThread, PatientConditionPhoto, VoiceBookingCall
 
 
 def _json_body(request):
@@ -595,7 +595,7 @@ def booking_detail(request, id):
                 d_name = d_name or staff_obj.full_name
                 d_spec = d_spec or staff_obj.specialization
                 d_phone = d_phone or staff_obj.contact_number
-                staff_obj.is_active = False
+                staff_obj.is_active = True
                 staff_obj.is_busy = True
                 staff_obj.assigned_booking_id = booking.id
                 staff_obj.save()
@@ -956,3 +956,147 @@ def voice_call_alert(request):
             },
         }
     )
+
+
+PHOTO_REQUIREMENTS = {
+    "ecg": "Send a clear ECG strip or ECG monitor photo.",
+    "patient": "Send a clear photo showing the patient's current condition.",
+    "patient_id": "Send the patient's ID/document only when it is safe and permitted.",
+    "vitals": "Send the monitor/vitals display so the care team can read it.",
+    "documents": "Send relevant medical documents or prescriptions.",
+    "other": "Send another clinically relevant condition photo.",
+}
+
+
+def _photo_to_dict(photo, request=None):
+    url = photo.image.url if photo.image else ""
+    if request and url:
+        url = request.build_absolute_uri(url)
+    return {
+        "id": photo.id,
+        "booking_id": photo.booking_id,
+        "photo_type": photo.photo_type,
+        "label": photo.get_photo_type_display(),
+        "instruction": photo.instruction or PHOTO_REQUIREMENTS.get(photo.photo_type, ""),
+        "url": url,
+        "original_name": photo.original_name,
+        "content_type": photo.content_type,
+        "uploader_role": photo.uploader_role,
+        "uploader_name": photo.uploader_name,
+        "uploader_email": photo.uploader_email,
+        "created_at": _iso(photo.created_at),
+    }
+
+
+def _booking_team(booking):
+    try:
+        parsed = json.loads(getattr(booking, "assigned_doctors_json", "[]") or "[]")
+        return parsed if isinstance(parsed, list) else []
+    except (TypeError, ValueError):
+        return []
+
+
+def _driver_can_access_booking(request, booking):
+    ambulance_id = _to_int(request.POST.get("ambulance_id") or request.GET.get("ambulance_id"), -1)
+    if ambulance_id < 0 or booking.ambulance_id != ambulance_id:
+        return False
+    ambulance = Ambulance.objects.filter(id=ambulance_id).first()
+    if not ambulance:
+        return False
+    email = str(request.POST.get("driver_email") or request.GET.get("driver_email") or "").strip().lower()
+    name = str(request.POST.get("driver_name") or request.GET.get("driver_name") or "").strip().lower()
+    return bool(
+        (email and str(ambulance.driver_email or "").strip().lower() == email)
+        or (name and str(ambulance.driver or "").strip().lower() == name)
+        or (not email and not name and booking.driver)
+    )
+
+
+def _staff_can_access_booking(request, booking):
+    staff_id = str(request.GET.get("staff_id") or request.POST.get("staff_id") or "").strip()
+    email = str(request.GET.get("email") or request.POST.get("email") or "").strip().lower()
+    staff = HospitalStaff.objects.select_related("hospital").filter(staff_id__iexact=staff_id, email__iexact=email, is_active=True).first()
+    if not staff:
+        return False
+    same_hospital = booking.assigned_hospital_id == staff.hospital_id or (
+        staff.hospital.name and str(booking.assigned_hospital_name or booking.destination).strip().lower() == staff.hospital.name.strip().lower()
+    )
+    if not same_hospital:
+        return False
+    team = _booking_team(booking)
+    if not team:
+        return True
+    return any(isinstance(member, dict) and (
+        str(member.get("id", "")) == str(staff.id)
+        or str(member.get("staff_id", "")).lower() == staff.staff_id.lower()
+        or str(member.get("full_name", member.get("name", ""))).strip().lower() == staff.full_name.strip().lower()
+    ) for member in team)
+
+
+@csrf_exempt
+def driver_assigned_bookings(request):
+    if request.method != "GET":
+        return JsonResponse({"error": "GET only"}, status=405)
+    ambulance_id = _to_int(request.GET.get("ambulance_id"), -1)
+    if ambulance_id < 0:
+        return JsonResponse({"error": "ambulance_id is required"}, status=400)
+    ambulance = Ambulance.objects.filter(id=ambulance_id).first()
+    if not ambulance:
+        return JsonResponse({"error": "Ambulance not found"}, status=404)
+    email = str(request.GET.get("driver_email", "")).strip().lower()
+    if email and str(ambulance.driver_email or "").strip().lower() != email:
+        return JsonResponse({"error": "Driver is not assigned to this ambulance"}, status=403)
+    bookings = Booking.objects.filter(ambulance_id=ambulance_id).exclude(status__in=["completed", "cancelled"]).order_by("-created_at")[:100]
+    rows = []
+    for booking in bookings:
+        row = booking_to_dict(booking)
+        row["photo_requirements"] = [{"type": key, "label": label, "instruction": PHOTO_REQUIREMENTS[key]} for key, label in PatientConditionPhoto.PHOTO_TYPES]
+        row["condition_photos"] = [_photo_to_dict(photo, request) for photo in booking.condition_photos.all()]
+        rows.append(row)
+    return JsonResponse(rows, safe=False)
+
+
+@csrf_exempt
+def booking_photos(request, booking_id):
+    try:
+        booking = Booking.objects.get(id=booking_id)
+    except Booking.DoesNotExist:
+        return JsonResponse({"error": "Booking not found"}, status=404)
+    role = str(request.GET.get("role") or request.POST.get("role") or "").strip().lower()
+    if request.method == "GET":
+        hospital_id = _to_int(request.GET.get("hospital_id"), -1)
+        allowed = role == "admin" or (role == "driver" and _driver_can_access_booking(request, booking)) or (role == "staff" and _staff_can_access_booking(request, booking)) or (hospital_id >= 0 and booking.assigned_hospital_id == hospital_id)
+        if not allowed:
+            return JsonResponse({"error": "You are not authorised to view these photos"}, status=403)
+        return JsonResponse({"booking_id": booking.id, "photos": [_photo_to_dict(photo, request) for photo in booking.condition_photos.all()]})
+    if request.method != "POST":
+        return JsonResponse({"error": "GET or POST only"}, status=405)
+    if role != "driver" or not _driver_can_access_booking(request, booking):
+        return JsonResponse({"error": "Only the assigned driver can upload photos"}, status=403)
+    if booking.status in {"completed", "cancelled"}:
+        return JsonResponse({"error": "Photos cannot be added to a closed booking"}, status=409)
+    files = request.FILES.getlist("photos")
+    if not files:
+        return JsonResponse({"error": "At least one photo is required"}, status=400)
+    photo_type = str(request.POST.get("photo_type", "patient")).strip().lower()
+    raw_types = [str(value).strip().lower() for value in request.POST.getlist("photo_types")]
+    raw_instructions = [str(value).strip() for value in request.POST.getlist("instructions")]
+    valid_types = {key for key, _ in PatientConditionPhoto.PHOTO_TYPES}
+    if photo_type not in valid_types:
+        return JsonResponse({"error": "Unknown photo type"}, status=400)
+    for item_type in raw_types:
+        if item_type not in valid_types:
+            return JsonResponse({"error": "Unknown photo type"}, status=400)
+    default_instruction = str(request.POST.get("instruction", "")).strip()
+    uploader_name = str(request.POST.get("driver_name", "")).strip() or booking.driver or "Ambulance driver"
+    uploader_email = str(request.POST.get("driver_email", "")).strip().lower()
+    created = []
+    for index, uploaded in enumerate(files):
+        if not str(uploaded.content_type or "").lower().startswith("image/"):
+            return JsonResponse({"error": "Only image files are accepted"}, status=400)
+        if uploaded.size > 10 * 1024 * 1024:
+            return JsonResponse({"error": "Each image must be 10 MB or smaller"}, status=413)
+        item_type = raw_types[index] if index < len(raw_types) else photo_type
+        item_instruction = raw_instructions[index] if index < len(raw_instructions) else (default_instruction or PHOTO_REQUIREMENTS[item_type])
+        created.append(PatientConditionPhoto.objects.create(booking=booking, photo_type=item_type, instruction=item_instruction, image=uploaded, original_name=uploaded.name[:255], content_type=uploaded.content_type or "image/*", uploader_role="driver", uploader_name=uploader_name, uploader_email=uploader_email))
+    return JsonResponse({"status": "uploaded", "photos": [_photo_to_dict(photo, request) for photo in created]}, status=201)
