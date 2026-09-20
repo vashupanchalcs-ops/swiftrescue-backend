@@ -63,6 +63,9 @@ CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", "")
 CSRF_TRUSTED_ORIGINS = [
     "https://*.onrender.com",
+    # Keep the current Render hostname explicit as well. This prevents the
+    # admin login CSRF check from depending on wildcard-origin parsing.
+    "https://swiftrescue-backend-shlb.onrender.com",
     "https://swiftrescue-backend.onrender.com",
     "https://aarogya-backend.onrender.com",
     "http://127.0.0.1:8000",
