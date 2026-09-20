@@ -102,9 +102,16 @@ TEMPLATES = [
 # Render supplies its managed PostgreSQL connection as a single DATABASE_URL.
 # SQLite remains only for local development without a configured database.
 database_url = os.getenv("DATABASE_URL", "").strip()
+try:
+    # Render's managed PostgreSQL plan has a small connection limit. Closing
+    # Django's connection after each request avoids stale Daphne worker
+    # connections consuming the pool and causing connection-slot errors.
+    db_conn_max_age = max(0, int(os.getenv("DB_CONN_MAX_AGE", "0")))
+except (TypeError, ValueError):
+    db_conn_max_age = 0
 if database_url:
     DATABASES = {
-        "default": dj_database_url.parse(database_url, conn_max_age=600),
+        "default": dj_database_url.parse(database_url, conn_max_age=db_conn_max_age),
     }
 elif os.getenv("POSTGRES_DB"):
     DATABASES = {
