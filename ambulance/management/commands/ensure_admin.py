@@ -5,11 +5,17 @@ import os
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 
+from ambulance.sequence_repair import repair_postgres_sequences
+
 
 class Command(BaseCommand):
     help = "Create the configured Django administrator when it does not exist."
 
     def handle(self, *args, **options):
+        repaired = repair_postgres_sequences()
+        if repaired:
+            self.stdout.write(f"Repaired {repaired} PostgreSQL sequence(s) before admin setup.")
+
         email = (os.getenv("ADMIN_EMAIL") or "").strip().lower()
         password = os.getenv("ADMIN_PASSWORD") or ""
         username = (os.getenv("ADMIN_USERNAME") or email.split("@", 1)[0]).strip()
