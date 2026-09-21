@@ -24,19 +24,23 @@ class Command(BaseCommand):
             return
 
         user_model = get_user_model()
-        if user_model.objects.filter(username=username).exists():
-            self.stdout.write("Administrator already exists; no account changes made.")
-            return
-
-        # Preserve the existing deployment administrator when the configured
-        # username is changed to match the legacy admin account name.
-        existing = user_model.objects.filter(email__iexact=email).first()
+        # Reconcile the deployment administrator on every boot. The previous
+        # implementation returned as soon as the username existed, which left
+        # a stale password in PostgreSQL after ADMIN_PASSWORD was rotated.
+        existing = user_model.objects.filter(username=username).first()
+        if not existing:
+            # Preserve the existing deployment administrator when the
+            # configured username changes to match the legacy admin account.
+            existing = user_model.objects.filter(email__iexact=email).first()
         if existing:
             existing.username = username
+            existing.email = email
             existing.is_staff = True
             existing.is_superuser = True
-            existing.save(update_fields=["username", "is_staff", "is_superuser"])
-            self.stdout.write(self.style.SUCCESS(f"Administrator renamed: {existing.username}"))
+            existing.is_active = True
+            existing.set_password(password)
+            existing.save(update_fields=["username", "email", "is_staff", "is_superuser", "is_active", "password"])
+            self.stdout.write(self.style.SUCCESS(f"Administrator synchronized: {existing.username}"))
             return
 
         user = user_model.objects.create_superuser(
