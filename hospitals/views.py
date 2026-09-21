@@ -135,6 +135,22 @@ def bed_to_dict(bed):
     }
 
 
+def sync_hospital_bed_counts(hospital_id):
+    """Keep hospital summary counters derived from the persisted bed rows."""
+    beds = HospitalBed.objects.filter(hospital_id=hospital_id)
+    total = beds.count()
+    available = beds.filter(status="available").count()
+    icu_total = beds.filter(bed_type="icu").count()
+    icu_available = beds.filter(bed_type="icu", status="available").count()
+    Hospital.objects.filter(id=hospital_id).update(
+        total_beds=total,
+        available_beds=available,
+        icu_beds=icu_total,
+        available_icu_beds=icu_available,
+        last_capacity_updated=timezone.now(),
+    )
+
+
 @csrf_exempt
 def hospital_beds(request, hospital_id):
     """GET all beds for a hospital (auto-seeds if none). PATCH a single bed."""
@@ -168,6 +184,7 @@ def hospital_beds(request, hospital_id):
                     wing="ICU"
                 )
                 created.append(b)
+            sync_hospital_bed_counts(hospital.id)
             return JsonResponse([bed_to_dict(b) for b in created], safe=False)
         return JsonResponse([bed_to_dict(b) for b in beds], safe=False)
 
@@ -197,7 +214,9 @@ def hospital_bed_detail(request, bed_id):
         for field in allowed:
             if field in data:
                 setattr(bed, field, data[field])
+        bed.last_status_update = timezone.now()
         bed.save()
+        sync_hospital_bed_counts(bed.hospital_id)
         return JsonResponse(bed_to_dict(bed))
 
     return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -266,7 +285,9 @@ def assign_bed_to_booking(request, hospital_id):
     bed.vitals_summary = booking.vitals_summary
     bed.attending_doctor = booking.assigned_doctor_names
     bed.admission_time = timezone.now()
+    bed.last_status_update = timezone.now()
     bed.save()
+    sync_hospital_bed_counts(hospital_id)
 
     # Update booking
     booking.assigned_bed_id = bed.id
