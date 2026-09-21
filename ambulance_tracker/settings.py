@@ -65,12 +65,16 @@ CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = list(dict.fromkeys([
     *env_list("CORS_ALLOWED_ORIGINS", ""),
     "https://book-your-amb.vercel.app",
+    "https://aarogya-tmep.onrender.com",
     "http://localhost:5174",
     "http://127.0.0.1:5174",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]))
-CORS_ALLOWED_ORIGIN_REGEXES = [r"^https://[a-z0-9-]+\.vercel\.app$"]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://[a-z0-9-]+\.vercel\.app$",
+    r"^https://[a-z0-9-]+\.onrender\.com$",
+]
 CORS_ALLOW_CREDENTIALS = False
 CSRF_TRUSTED_ORIGINS = [
     "https://*.onrender.com",
