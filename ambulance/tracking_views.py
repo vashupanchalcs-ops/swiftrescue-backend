@@ -11,6 +11,53 @@ import urllib.request
 import urllib.parse
 
 
+def _resolve_ambulance(raw_id):
+    """Resolve an ambulance by database id, fleet number, or contract id."""
+    value = str(raw_id or "").strip()
+    if not value:
+        return None
+    if value.isdigit():
+        ambulance = Ambulance.objects.filter(id=int(value)).first()
+        if ambulance:
+            return ambulance
+    ambulance = Ambulance.objects.filter(ambulance_number__iexact=value).first()
+    if ambulance:
+        return ambulance
+    return Ambulance.objects.filter(ambulance_contract_id__iexact=value).first()
+
+
+@csrf_exempt
+def update_battery(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    try:
+        data = json.loads(request.body or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+
+    ambulance_id = data.get("ambulance_id")
+    battery_percentage = data.get("battery_percentage")
+    if ambulance_id is None or battery_percentage is None:
+        return JsonResponse({"error": "ambulance_id and battery_percentage are required"}, status=400)
+
+    ambulance = _resolve_ambulance(ambulance_id)
+    if not ambulance:
+        return JsonResponse({"error": "Ambulance not found"}, status=404)
+    try:
+        battery_value = max(0, min(100, int(battery_percentage)))
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "battery_percentage must be an integer"}, status=400)
+
+    ambulance.battery_percentage = battery_value
+    ambulance.save(update_fields=["battery_percentage", "last_updated"])
+    return JsonResponse({
+        "status": "ok",
+        "ambulance_id": ambulance.id,
+        "battery_percentage": ambulance.battery_percentage,
+        "last_updated": ambulance.last_updated.isoformat(),
+    })
+
+
 def _route_dict(r):
     if not r:
         return None
@@ -213,4 +260,4 @@ def active_route_by_booking(request, booking_id):
             ambulance_id=booking.ambulance_id,
             status__in=["pending", "accepted"],
         ).order_by("-created_at").first()
-    return JsonResponse(_route_dict(route) if route else {})
+    return JsonResponse(_route_dict(route) if route else {})

@@ -25,6 +25,7 @@ class Ambulance(models.Model):
     eta_to_hospital   = models.CharField(max_length=50, blank=True)
     latitude          = models.FloatField(null=True, blank=True)
     longitude         = models.FloatField(null=True, blank=True)
+    battery_percentage = models.IntegerField(default=100)
     last_updated      = models.DateTimeField(auto_now=True)
 
     class Meta:

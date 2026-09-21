@@ -13,6 +13,7 @@ from ambulance.tracking_views import (
     driver_active_route,
     get_traffic_route,
     active_route_by_booking,
+    update_battery,
 )
 
 from django.http import JsonResponse
@@ -48,6 +49,7 @@ urlpatterns = [
 
     # ── REAL-TIME GPS TRACKING ───────────────────────
     path("api/driver/ping/",                         driver_ping),
+    path("api/update-battery/",                      update_battery),
     path("api/driver/active-route/",                 driver_active_route),
     path("api/driver/route/<int:route_id>/respond/", respond_route),
 
