@@ -59,8 +59,19 @@ MIDDLEWARE = [
 ]
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
-CORS_ALLOW_ALL_ORIGINS = True
-CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", "")
+# Keep the production SPA and local Vite origins explicit. A regex also allows
+# Vercel preview deployments without opening API responses to arbitrary sites.
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = list(dict.fromkeys([
+    *env_list("CORS_ALLOWED_ORIGINS", ""),
+    "https://book-your-amb.vercel.app",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]))
+CORS_ALLOWED_ORIGIN_REGEXES = [r"^https://[a-z0-9-]+\.vercel\.app$"]
+CORS_ALLOW_CREDENTIALS = False
 CSRF_TRUSTED_ORIGINS = [
     "https://*.onrender.com",
     # Keep the current Render hostname explicit as well. This prevents the
@@ -70,7 +81,9 @@ CSRF_TRUSTED_ORIGINS = [
     "https://aarogya-backend.onrender.com",
     "http://127.0.0.1:8000",
     "http://localhost:8000",
+    "http://127.0.0.1:5174",
     "http://localhost:5173",
+    "http://127.0.0.1:5173",
 ]
 render_external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
 if render_external_url and render_external_url not in CSRF_TRUSTED_ORIGINS:
