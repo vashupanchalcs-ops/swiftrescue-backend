@@ -1,5 +1,6 @@
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.contrib.auth.hashers import make_password, check_password
@@ -151,41 +152,126 @@ def sync_hospital_bed_counts(hospital_id):
     )
 
 
+def ensure_hospital_beds(hospital):
+    """Make the persisted bed inventory cover the hospital's configured capacity.
+
+    Older production data can contain only the first batch of HospitalBed rows
+    while the Hospital summary already has the full capacity.  Returning that
+    partial batch makes the home dashboard and the bed console disagree.  Add
+    only missing, unassigned rows here; never delete or rewrite existing beds.
+    New rows are distributed between ICU/general and available/reserved so the
+    persisted inventory reaches the configured summary where possible.
+    """
+    def as_non_negative_int(value):
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    with transaction.atomic():
+        existing = list(
+            HospitalBed.objects.select_for_update().filter(hospital_id=hospital.id)
+        )
+        current_total = len(existing)
+        current_available = sum(b.status == "available" for b in existing)
+        current_icu = sum(b.bed_type == "icu" for b in existing)
+        current_icu_available = sum(
+            b.bed_type == "icu" and b.status == "available" for b in existing
+        )
+
+        configured_total = as_non_negative_int(hospital.total_beds)
+        configured_icu = as_non_negative_int(hospital.icu_beds)
+        configured_available = as_non_negative_int(hospital.available_beds)
+        configured_icu_available = as_non_negative_int(hospital.available_icu_beds)
+
+        # Keep the old fallback of one visible bed for an unconfigured hospital,
+        # while never shrinking an inventory that already has real records.
+        target_total = max(1, configured_total, current_total)
+        target_icu = min(target_total, max(configured_icu, current_icu))
+        target_available = min(
+            target_total,
+            max(configured_available, 1 if configured_total == 0 else 0),
+        )
+        target_icu_available = min(target_icu, configured_icu_available)
+
+        total_to_add = max(0, target_total - current_total)
+        icu_to_add = min(total_to_add, max(0, target_icu - current_icu))
+        general_to_add = total_to_add - icu_to_add
+
+        available_to_add = min(
+            total_to_add,
+            max(0, target_available - current_available),
+        )
+        icu_available_to_add = min(
+            icu_to_add,
+            available_to_add,
+            max(0, target_icu_available - current_icu_available),
+        )
+        general_available_to_add = min(
+            general_to_add,
+            max(0, available_to_add - icu_available_to_add),
+        )
+
+        used_numbers = set(
+            str(b.bed_number or "").strip().upper() for b in existing
+        )
+
+        def next_bed_number(prefix):
+            index = 1
+            while f"{prefix}-{index:03d}" in used_numbers:
+                index += 1
+            number = f"{prefix}-{index:03d}"
+            used_numbers.add(number)
+            return number
+
+        created = []
+        for index in range(icu_to_add):
+            created.append(
+                HospitalBed.objects.create(
+                    hospital_id=hospital.id,
+                    bed_number=next_bed_number("ICU"),
+                    bed_type="icu",
+                    status="available" if index < icu_available_to_add else "reserved",
+                    wing="ICU",
+                )
+            )
+        for index in range(general_to_add):
+            created.append(
+                HospitalBed.objects.create(
+                    hospital_id=hospital.id,
+                    bed_number=next_bed_number("G"),
+                    bed_type="general",
+                    status="available" if index < general_available_to_add else "reserved",
+                    wing="General Ward",
+                )
+            )
+
+        # The dashboard and bed endpoint must expose the same persisted counts.
+        # Sync when rows were added or when older summary counters are stale.
+        summary_is_stale = (
+            current_total != as_non_negative_int(hospital.total_beds)
+            or current_available != as_non_negative_int(hospital.available_beds)
+            or current_icu != as_non_negative_int(hospital.icu_beds)
+            or current_icu_available != as_non_negative_int(hospital.available_icu_beds)
+        )
+        if created or summary_is_stale:
+            sync_hospital_bed_counts(hospital.id)
+
+    if created or summary_is_stale:
+        hospital.refresh_from_db()
+    return list(HospitalBed.objects.filter(hospital_id=hospital.id))
+
+
 @csrf_exempt
 def hospital_beds(request, hospital_id):
-    """GET all beds for a hospital (auto-seeds if none). PATCH a single bed."""
+    """GET the complete persisted bed inventory. PATCH is handled separately."""
     try:
         hospital = Hospital.objects.get(id=hospital_id)
     except Hospital.DoesNotExist:
         return JsonResponse({"error": "Hospital not found"}, status=404)
 
     if request.method == "GET":
-        beds = HospitalBed.objects.filter(hospital=hospital)
-        # Auto-seed beds if none exist
-        if not beds.exists():
-            total_general = max(1, hospital.total_beds - hospital.icu_beds)
-            total_icu = max(0, hospital.icu_beds)
-            created = []
-            for i in range(1, total_general + 1):
-                b = HospitalBed.objects.create(
-                    hospital=hospital,
-                    bed_number=f"G-{i:03d}",
-                    bed_type="general",
-                    status="available",
-                    wing="General Ward"
-                )
-                created.append(b)
-            for i in range(1, total_icu + 1):
-                b = HospitalBed.objects.create(
-                    hospital=hospital,
-                    bed_number=f"ICU-{i:03d}",
-                    bed_type="icu",
-                    status="available",
-                    wing="ICU"
-                )
-                created.append(b)
-            sync_hospital_bed_counts(hospital.id)
-            return JsonResponse([bed_to_dict(b) for b in created], safe=False)
+        beds = ensure_hospital_beds(hospital)
         return JsonResponse([bed_to_dict(b) for b in beds], safe=False)
 
     return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -435,6 +521,10 @@ def hospital_dashboard(request, id):
         hospital = Hospital.objects.get(id=id, is_active=True)
     except Hospital.DoesNotExist:
         return JsonResponse({"error": "Hospital not found"}, status=404)
+
+    # Keep the dashboard counters and the bed console on the same persisted
+    # inventory even when an older deployment created only partial bed rows.
+    ensure_hospital_beds(hospital)
 
     # Ensure hospital has valid real-world coordinates for accurate routing & ETA
     h_lat = str(hospital.latitude or "").strip()
