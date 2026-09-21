@@ -124,6 +124,12 @@ elif os.getenv("POSTGRES_DB"):
             "PORT": os.getenv("POSTGRES_PORT", "5432"),
         }
     }
+
+# Keep the async Daphne worker below Render PostgreSQL's small connection
+# ceiling. Health checks prevent a reused connection from serving stale/broken
+# sockets while zero max-age closes request connections promptly.
+DATABASES["default"]["CONN_MAX_AGE"] = 0
+DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 else:
     DATABASES = {
         "default": {
