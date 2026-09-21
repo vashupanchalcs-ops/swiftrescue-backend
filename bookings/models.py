@@ -8,6 +8,13 @@ class Booking(models.Model):
         ("completed", "Completed"),
         ("cancelled", "Cancelled"),
     ]
+    PAYMENT_STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("due", "Due"),
+        ("paid", "Paid"),
+        ("overdue", "Overdue"),
+        ("cancelled", "Cancelled"),
+    ]
 
     ambulance_id = models.IntegerField()
     ambulance_number = models.CharField(max_length=50, blank=True, default="")
@@ -70,6 +77,11 @@ class Booking(models.Model):
     insurance_reviewed_at = models.DateTimeField(null=True, blank=True)
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default="due")
+    payment_total = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    payment_amount_due = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    payment_note = models.CharField(max_length=500, blank=True, default="")
+    payment_updated_at = models.DateTimeField(null=True, blank=True)
     sent_to_driver = models.BooleanField(default=False)
     sent_to_driver_at = models.DateTimeField(null=True, blank=True)
     driver_task_completed = models.BooleanField(default=False)

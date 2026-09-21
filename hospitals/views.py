@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.contrib.auth.hashers import make_password, check_password
+from decimal import Decimal, InvalidOperation
 from ambulance.models import Ambulance
 from hospitals.models import Hospital, HospitalStaff, HospitalBed
 from bookings.models import Booking
@@ -576,6 +577,11 @@ def hospital_dashboard(request, id):
             "assigned_hospital_contact": booking.assigned_hospital_contact,
             "assigned_hospital_email": booking.assigned_hospital_email,
             "status": booking.status,
+            "payment_status": getattr(booking, "payment_status", "due"),
+            "payment_total": float(booking.payment_total) if getattr(booking, "payment_total", None) is not None else None,
+            "payment_amount_due": float(booking.payment_amount_due) if getattr(booking, "payment_amount_due", None) is not None else None,
+            "payment_note": getattr(booking, "payment_note", ""),
+            "payment_updated_at": booking.payment_updated_at.isoformat() if getattr(booking, "payment_updated_at", None) else None,
             "ambulance_number": booking.ambulance_number,
             "driver_name": booking.driver,
             "driver_contact": booking.driver_contact,
@@ -659,6 +665,65 @@ def hospital_dashboard(request, id):
 
 
 @csrf_exempt
+def hospital_payment_detail(request, hospital_id, booking_id):
+    try:
+        hospital = Hospital.objects.get(id=hospital_id)
+    except Hospital.DoesNotExist:
+        return JsonResponse({"error": "Hospital not found"}, status=404)
+
+    hospital_filter = Q(assigned_hospital_id=hospital.id)
+    if hospital.email:
+        hospital_filter |= Q(assigned_hospital_email__iexact=hospital.email)
+    if hospital.name:
+        hospital_filter |= Q(assigned_hospital_name__iexact=hospital.name) | Q(destination__iexact=hospital.name)
+    booking = Booking.objects.filter(Q(id=booking_id) & hospital_filter).first()
+    if not booking:
+        return JsonResponse({"error": "Payment record not found for this hospital"}, status=404)
+
+    if request.method == "GET":
+        return JsonResponse({
+            "booking_id": booking.id,
+            "payment_status": getattr(booking, "payment_status", "due"),
+            "payment_total": float(booking.payment_total) if booking.payment_total is not None else None,
+            "payment_amount_due": float(booking.payment_amount_due) if booking.payment_amount_due is not None else None,
+            "payment_note": getattr(booking, "payment_note", ""),
+            "payment_updated_at": booking.payment_updated_at.isoformat() if booking.payment_updated_at else None,
+        })
+    if request.method != "PATCH":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+
+    payment_status = str(data.get("payment_status", getattr(booking, "payment_status", "due"))).strip().lower()
+    if payment_status not in {"draft", "due", "paid", "overdue", "cancelled"}:
+        return JsonResponse({"error": "Invalid payment status"}, status=400)
+    try:
+        total = Decimal(str(data.get("payment_total", booking.payment_total or "0")))
+        amount_due = Decimal(str(data.get("payment_amount_due", booking.payment_amount_due or "0")))
+    except (InvalidOperation, TypeError, ValueError):
+        return JsonResponse({"error": "Payment amounts must be valid numbers"}, status=400)
+    if total < 0 or amount_due < 0 or amount_due > total:
+        return JsonResponse({"error": "Amount due cannot be greater than total"}, status=400)
+
+    booking.payment_status = payment_status
+    booking.payment_total = total
+    booking.payment_amount_due = amount_due
+    booking.payment_note = str(data.get("payment_note", ""))[:500]
+    booking.payment_updated_at = timezone.now()
+    booking.save(update_fields=["payment_status", "payment_total", "payment_amount_due", "payment_note", "payment_updated_at"])
+    return JsonResponse({
+        "booking_id": booking.id,
+        "payment_status": booking.payment_status,
+        "payment_total": float(booking.payment_total),
+        "payment_amount_due": float(booking.payment_amount_due),
+        "payment_note": booking.payment_note,
+        "payment_updated_at": booking.payment_updated_at.isoformat(),
+    })
+
+
 def hospital_list(request):
 
     if request.method == "GET":
