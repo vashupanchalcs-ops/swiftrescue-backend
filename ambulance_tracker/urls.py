@@ -15,10 +15,13 @@ from ambulance.tracking_views import (
     active_route_by_booking,
 )
 
+from django.http import JsonResponse
+
 urlpatterns = [
     path("", views.home),
     path("favicon.ico", views.favicon),
     path("admin/", admin.site.urls),
+    path("api/health/", lambda req: JsonResponse({"status": "ok", "service": "aarogya"})),
 
     # ── OTP & AUTH ──────────────────────────────────
     path("api/send-otp/",         views.send_otp),

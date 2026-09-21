@@ -775,8 +775,8 @@ def get_active_routes(request):
 @csrf_exempt
 def sync_user(request):
     """
-    POST: Store logged-in user details in the backend database.
-    Only users (role: 'user') are stored.
+    POST: Store logged-in user details — ALL roles (user, driver, hospital, staff, admin).
+    Creates/updates Django auth.User + UserProfile with all columns.
     """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
@@ -786,35 +786,70 @@ def sync_user(request):
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
     email = str(data.get("email", "")).strip().lower()
-    name = str(data.get("name", "")).strip()
-    role = str(data.get("role", "user")).strip().lower()
-
     if not email:
         return JsonResponse({"error": "Email is required"}, status=400)
 
-    if role != "user":
-        return JsonResponse({"message": "Non-user role skipped", "role": role})
+    name                = str(data.get("name", "")).strip()
+    role                = str(data.get("role", "user")).strip().lower()
+    phone               = str(data.get("phone", "")).strip()
+    ambulance_id        = data.get("ambulance_id")
+    ambulance_number    = str(data.get("ambulance_number", "")).strip()
+    contract_id         = str(data.get("contract_id", "")).strip()
+    registration_number = str(data.get("registration_number", "")).strip()
+    hospital_id         = data.get("hospital_id")
+    hospital_name       = str(data.get("hospital_name", "")).strip()
+    staff_id            = str(data.get("staff_id", "")).strip()
+    staff_role          = str(data.get("staff_role", "")).strip()
+    ip = (request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
+          or request.META.get("REMOTE_ADDR") or None)
 
     from django.contrib.auth.models import User
     from django.utils import timezone
+    from ambulance.models import UserProfile
 
-    user, created = User.objects.get_or_create(username=email, defaults={"email": email, "first_name": name})
+    # 1. Sync Django auth.User
+    auth_user, _ = User.objects.get_or_create(username=email, defaults={"email": email, "first_name": name})
+    if name: auth_user.first_name = name
+    if email: auth_user.email = email
+    auth_user.last_login = timezone.now()
+    auth_user.save()
+
+    # 2. Upsert UserProfile — all columns
+    profile, created = UserProfile.objects.get_or_create(
+        email=email,
+        defaults={
+            "name": name, "phone": phone, "role": role,
+            "ambulance_id": ambulance_id, "ambulance_number": ambulance_number,
+            "contract_id": contract_id, "registration_number": registration_number,
+            "hospital_id": hospital_id, "hospital_name": hospital_name,
+            "staff_id": staff_id, "staff_role": staff_role,
+            "last_login_ip": ip, "login_count": 1,
+        }
+    )
     if not created:
-        if name and user.first_name != name:
-            user.first_name = name
-        if email and user.email != email:
-            user.email = email
-    user.last_login = timezone.now()
-    user.save()
+        update_fields = {"last_login_ip": ip, "login_count": profile.login_count + 1}
+        if name:  update_fields["name"] = name
+        if phone: update_fields["phone"] = phone
+        if role:  update_fields["role"] = role
+        if ambulance_id:     update_fields["ambulance_id"] = ambulance_id
+        if ambulance_number: update_fields["ambulance_number"] = ambulance_number
+        if contract_id:      update_fields["contract_id"] = contract_id
+        if registration_number: update_fields["registration_number"] = registration_number
+        if hospital_id:   update_fields["hospital_id"] = hospital_id
+        if hospital_name: update_fields["hospital_name"] = hospital_name
+        if staff_id:   update_fields["staff_id"] = staff_id
+        if staff_role: update_fields["staff_role"] = staff_role
+        UserProfile.objects.filter(email=email).update(**update_fields)
+        profile.refresh_from_db()
 
     return JsonResponse({
         "success": True,
         "created": created,
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "name": user.first_name,
-            "last_login": user.last_login.isoformat() if user.last_login else None,
+        "profile": {
+            "id": profile.id,
+            "email": email,
+            "name": profile.name,
+            "role": role,
+            "login_count": profile.login_count,
         }
     })

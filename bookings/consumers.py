@@ -18,17 +18,19 @@ class ConsultationConsumer(AsyncWebsocketConsumer):
         self.staff_id = query.get("staff_id", [""])[0]
         self.email = query.get("email", [""])[0]
         self.ambulance_id = query.get("ambulance_id", [""])[0]
+        self.client_id = query.get("client_id", [""])[0] or self.channel_name
+        self.participant_id = query.get("participant_id", [""])[0]
         if self.role not in {"driver", "staff"} or not await self._is_authorized():
             await self.close(code=4403)
             return
         self.group_name = f"consultation_{self.booking_id}"
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
-        await self.channel_layer.group_send(self.group_name, {"type": "consultation.signal", "sender": self.channel_name, "payload": {"type": "peer-joined", "role": self.role}})
+        await self.channel_layer.group_send(self.group_name, {"type": "consultation.signal", "sender": self.channel_name, "payload": {"type": "peer-joined", "role": self.role, "sender_id": self.client_id, "participant_id": self.participant_id}})
 
     async def disconnect(self, code):
         if getattr(self, "group_name", None):
-            await self.channel_layer.group_send(self.group_name, {"type": "consultation.signal", "sender": self.channel_name, "payload": {"type": "peer-left", "role": getattr(self, "role", "")}})
+            await self.channel_layer.group_send(self.group_name, {"type": "consultation.signal", "sender": self.channel_name, "payload": {"type": "peer-left", "role": getattr(self, "role", ""), "sender_id": getattr(self, "client_id", "")}})
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
     async def receive(self, text_data=None, bytes_data=None):
@@ -40,6 +42,7 @@ class ConsultationConsumer(AsyncWebsocketConsumer):
             return
         if not isinstance(payload, dict) or payload.get("type") not in {"join", "offer", "answer", "ice-candidate", "leave"}:
             return
+        payload = {**payload, "sender_id": self.client_id}
         await self.channel_layer.group_send(self.group_name, {"type": "consultation.signal", "sender": self.channel_name, "payload": payload})
 
     async def consultation_signal(self, event):

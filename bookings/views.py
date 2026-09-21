@@ -9,7 +9,7 @@ from django.views.decorators.csrf import csrf_exempt
 from ambulance.models import Ambulance
 from hospitals.models import Hospital, HospitalStaff
 
-from .models import Booking, BookingChatMessage, BookingChatThread, PatientConditionPhoto, VoiceBookingCall
+from .models import Booking, BookingChatMessage, BookingChatThread, PatientConditionPhoto, VideoCallRequest, VoiceBookingCall
 
 
 def _json_body(request):
@@ -1022,14 +1022,15 @@ def _booking_team(booking):
 
 
 def _driver_can_access_booking(request, booking):
-    ambulance_id = _to_int(request.POST.get("ambulance_id") or request.GET.get("ambulance_id"), -1)
+    body = _json_body(request) or {}
+    ambulance_id = _to_int(body.get("ambulance_id") or request.POST.get("ambulance_id") or request.GET.get("ambulance_id"), -1)
     if ambulance_id < 0 or booking.ambulance_id != ambulance_id:
         return False
     ambulance = Ambulance.objects.filter(id=ambulance_id).first()
     if not ambulance:
         return False
-    email = str(request.POST.get("driver_email") or request.GET.get("driver_email") or "").strip().lower()
-    name = str(request.POST.get("driver_name") or request.GET.get("driver_name") or "").strip().lower()
+    email = str(body.get("driver_email") or request.POST.get("driver_email") or request.GET.get("driver_email") or "").strip().lower()
+    name = str(body.get("driver_name") or request.POST.get("driver_name") or request.GET.get("driver_name") or "").strip().lower()
     return bool(
         (email and str(ambulance.driver_email or "").strip().lower() == email)
         or (name and str(ambulance.driver or "").strip().lower() == name)
@@ -1056,6 +1057,116 @@ def _staff_can_access_booking(request, booking):
         or str(member.get("staff_id", "")).lower() == staff.staff_id.lower()
         or str(member.get("full_name", member.get("name", ""))).strip().lower() == staff.full_name.strip().lower()
     ) for member in team)
+
+
+def _video_request_to_dict(item):
+    return {
+        "id": item.id,
+        "booking_id": item.booking_id,
+        "staff_id": item.staff.staff_id,
+        "staff_profile_id": item.staff_id,
+        "staff_contract_id": item.staff.staff_id,
+        "staff_name": item.staff.full_name,
+        "staff_role": item.staff.role,
+        "staff_specialization": item.staff.specialization,
+        "staff_email": item.staff.email,
+        "staff_photo": item.staff.photo_data or "",
+        "driver_name": item.driver_name,
+        "driver_email": item.driver_email,
+        "status": item.status,
+        "requested_at": _iso(item.requested_at),
+        "responded_at": _iso(item.responded_at),
+        "joined_at": _iso(item.joined_at),
+    }
+
+
+def _assigned_team_member(booking, staff):
+    return any(isinstance(member, dict) and (
+        str(member.get("id", "")) == str(staff.id)
+        or str(member.get("staff_id", "")).lower() == staff.staff_id.lower()
+        or str(member.get("full_name", member.get("name", ""))).strip().lower() == staff.full_name.strip().lower()
+    ) for member in _booking_team(booking))
+
+
+@csrf_exempt
+def video_call_requests(request):
+    """Persist driver-to-allocated-staff video requests and accepted members."""
+    if request.method == "GET":
+        booking_id = _to_int(request.GET.get("booking_id"), -1)
+        if booking_id < 0:
+            return JsonResponse({"error": "booking_id is required"}, status=400)
+        booking = Booking.objects.filter(id=booking_id).first()
+        if not booking:
+            return JsonResponse({"error": "Booking not found"}, status=404)
+        role = str(request.GET.get("role", "")).strip().lower()
+        if role == "driver":
+            if not _driver_can_access_booking(request, booking):
+                return JsonResponse({"error": "Only the assigned driver can view these requests"}, status=403)
+            qs = VideoCallRequest.objects.filter(booking=booking).select_related("staff")
+        elif role == "staff":
+            if not _staff_can_access_booking(request, booking):
+                return JsonResponse({"error": "Only allocated staff can view these requests"}, status=403)
+            staff_id = str(request.GET.get("staff_id", "")).strip()
+            email = str(request.GET.get("email", "")).strip().lower()
+            staff = HospitalStaff.objects.filter(staff_id__iexact=staff_id, email__iexact=email, is_active=True).first()
+            if not staff:
+                return JsonResponse({"error": "Staff account not found or inactive"}, status=404)
+            qs = VideoCallRequest.objects.filter(booking=booking, staff=staff).select_related("staff")
+        else:
+            return JsonResponse({"error": "role must be driver or staff"}, status=400)
+        return JsonResponse({"booking_id": booking.id, "requests": [_video_request_to_dict(item) for item in qs[:20]]})
+
+    if request.method != "POST":
+        return JsonResponse({"error": "GET or POST only"}, status=405)
+    data = _json_body(request) or {}
+    booking_id = _to_int(data.get("booking_id"), -1)
+    booking = Booking.objects.filter(id=booking_id).first()
+    if not booking or not _driver_can_access_booking(request, booking):
+        return JsonResponse({"error": "Only the assigned driver can request a booking call"}, status=403)
+    staff_profile_id = _to_int(data.get("staff_id"), -1)
+    staff = HospitalStaff.objects.filter(id=staff_profile_id, is_active=True).first()
+    if not staff or not _assigned_team_member(booking, staff):
+        return JsonResponse({"error": "Video requests can only be sent to staff allocated to this booking"}, status=403)
+    accepted_count = VideoCallRequest.objects.filter(booking=booking, status="accepted").count()
+    existing = VideoCallRequest.objects.filter(booking=booking, staff=staff, status__in=["pending", "accepted"]).order_by("-id").first()
+    if existing:
+        return JsonResponse(_video_request_to_dict(existing), status=200)
+    if accepted_count >= 3:
+        return JsonResponse({"error": "Maximum 4 participants added (driver + 3 staff)", "code": "MAX_PARTICIPANTS"}, status=409)
+    driver_email = str(data.get("driver_email") or request.POST.get("driver_email") or "").strip().lower()
+    driver_name = str(data.get("driver_name") or booking.driver or "Driver").strip()
+    item = VideoCallRequest.objects.create(booking=booking, staff=staff, driver_email=driver_email, driver_name=driver_name)
+    return JsonResponse(_video_request_to_dict(item), status=201)
+
+
+@csrf_exempt
+def video_call_request_respond(request, request_id):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    item = VideoCallRequest.objects.select_related("booking", "staff").filter(id=request_id).first()
+    if not item:
+        return JsonResponse({"error": "Video request not found"}, status=404)
+    data = _json_body(request) or {}
+    staff_id = str(data.get("staff_id", "")).strip()
+    email = str(data.get("email", "")).strip().lower()
+    if staff_id.lower() != item.staff.staff_id.lower() or email != item.staff.email.lower():
+        return JsonResponse({"error": "Only the requested staff member can respond"}, status=403)
+    action = str(data.get("action", "")).strip().lower()
+    if action not in {"accept", "reject"}:
+        return JsonResponse({"error": "action must be accept or reject"}, status=400)
+    if item.status not in {"pending", "accepted"}:
+        return JsonResponse(_video_request_to_dict(item))
+    if action == "accept":
+        accepted_count = VideoCallRequest.objects.filter(booking=item.booking, status="accepted").exclude(id=item.id).count()
+        if accepted_count >= 3:
+            return JsonResponse({"error": "Maximum 4 participants added (driver + 3 staff)", "code": "MAX_PARTICIPANTS"}, status=409)
+        item.status = "accepted"
+        item.joined_at = timezone.now()
+    else:
+        item.status = "rejected"
+    item.responded_at = timezone.now()
+    item.save(update_fields=["status", "joined_at", "responded_at"])
+    return JsonResponse(_video_request_to_dict(item))
 
 
 @csrf_exempt

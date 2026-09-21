@@ -849,6 +849,7 @@ def staff_notifications(request):
     if staff.hospital.name:
         hospital_filter |= Q(assigned_hospital_name__iexact=staff.hospital.name) | Q(destination__iexact=staff.hospital.name)
     notifications = []
+    from bookings.models import VideoCallRequest
     for booking in Booking.objects.filter(hospital_filter).order_by("-doctors_assigned_at", "-id")[:100]:
         try:
             team = json.loads(getattr(booking, "assigned_doctors_json", "[]") or "[]")
@@ -869,4 +870,17 @@ def staff_notifications(request):
             "status": booking.status,
             "timestamp": getattr(booking, "doctors_assigned_at", None).isoformat() if getattr(booking, "doctors_assigned_at", None) else booking.created_at.isoformat(),
         })
+    video_requests = VideoCallRequest.objects.filter(
+        staff=staff, status="pending"
+    ).select_related("booking", "staff").order_by("-requested_at")[:20]
+    notifications.extend({
+        "id": f"video-call-{item.id}",
+        "booking_id": item.booking_id,
+        "video_request_id": item.id,
+        "type": "video_call_request",
+        "title": f"Video call request from {item.driver_name or 'ambulance driver'}",
+        "message": f"Join the live consultation for Booking #{item.booking_id}.",
+        "status": item.status,
+        "timestamp": item.requested_at.isoformat(),
+    } for item in video_requests)
     return JsonResponse({"notifications": notifications})

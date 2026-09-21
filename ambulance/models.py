@@ -27,6 +27,12 @@ class Ambulance(models.Model):
     longitude         = models.FloatField(null=True, blank=True)
     last_updated      = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["status"]),
+            models.Index(fields=["driver_email"]),
+        ]
+
     def __str__(self):
         return self.ambulance_number
 
@@ -76,3 +82,53 @@ class SuggestedRoute(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class UserProfile(models.Model):
+    """
+    Stores every user who logs in — all roles (user, driver, hospital, staff, admin).
+    Synced from frontend via /api/auth/sync-user/ on every login.
+    """
+    ROLE_CHOICES = [
+        ("user",     "User"),
+        ("driver",   "Driver"),
+        ("hospital", "Hospital"),
+        ("staff",    "Staff"),
+        ("admin",    "Admin"),
+    ]
+
+    email            = models.EmailField(unique=True, db_index=True)
+    name             = models.CharField(max_length=200, blank=True, default="")
+    phone            = models.CharField(max_length=30, blank=True, default="")
+    role             = models.CharField(max_length=20, choices=ROLE_CHOICES, default="user", db_index=True)
+
+    # Driver-specific
+    ambulance_id     = models.IntegerField(null=True, blank=True)
+    ambulance_number = models.CharField(max_length=80, blank=True, default="")
+    contract_id      = models.CharField(max_length=80, blank=True, default="")
+    registration_number = models.CharField(max_length=80, blank=True, default="")
+
+    # Hospital/Staff-specific
+    hospital_id      = models.IntegerField(null=True, blank=True)
+    hospital_name    = models.CharField(max_length=200, blank=True, default="")
+    staff_id         = models.CharField(max_length=80, blank=True, default="")
+    staff_role       = models.CharField(max_length=80, blank=True, default="")
+
+    # Login metadata
+    login_count      = models.IntegerField(default=0)
+    first_login_at   = models.DateTimeField(auto_now_add=True)
+    last_login_at    = models.DateTimeField(auto_now=True)
+    last_login_ip    = models.GenericIPAddressField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-last_login_at"]
+        verbose_name = "User Profile"
+        verbose_name_plural = "User Profiles"
+        indexes = [
+            models.Index(fields=["role"]),
+            models.Index(fields=["email"]),
+            models.Index(fields=["-last_login_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.email} ({self.role})"

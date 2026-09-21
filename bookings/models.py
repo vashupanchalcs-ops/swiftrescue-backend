@@ -111,6 +111,15 @@ class Booking(models.Model):
     is_read = models.BooleanField(default=False)
     is_user_selected_hospital = models.BooleanField(default=False)
 
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["-created_at"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["ambulance_id"]),
+            models.Index(fields=["booked_by_email"]),
+        ]
+
     def __str__(self):
         return f"{self.ambulance_number} - {self.booked_by}"
 
@@ -227,3 +236,31 @@ class VoiceBookingCall(models.Model):
 
     def __str__(self):
         return f"{self.call_sid} ({self.call_status})"
+
+
+class VideoCallRequest(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("accepted", "Accepted"),
+        ("rejected", "Rejected"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name="video_call_requests")
+    staff = models.ForeignKey("hospitals.HospitalStaff", on_delete=models.CASCADE, related_name="video_call_requests")
+    driver_email = models.EmailField(blank=True, default="")
+    driver_name = models.CharField(max_length=120, blank=True, default="")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending", db_index=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+    joined_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-requested_at", "-id"]
+        indexes = [
+            models.Index(fields=["booking", "status"]),
+            models.Index(fields=["staff", "status"]),
+        ]
+
+    def __str__(self):
+        return f"Video request #{self.id} · Booking #{self.booking_id} · {self.staff.full_name} ({self.status})"
