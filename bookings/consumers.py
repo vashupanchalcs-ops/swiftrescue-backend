@@ -42,7 +42,12 @@ class ConsultationConsumer(AsyncWebsocketConsumer):
             return
         if not isinstance(payload, dict) or payload.get("type") not in {"join", "offer", "answer", "ice-candidate", "leave"}:
             return
-        payload = {**payload, "sender_id": self.client_id}
+        payload = {
+            **payload,
+            "sender_id": self.client_id,
+            "role": getattr(self, "role", ""),
+            "participant_id": getattr(self, "participant_id", ""),
+        }
         await self.channel_layer.group_send(self.group_name, {"type": "consultation.signal", "sender": self.channel_name, "payload": payload})
 
     async def consultation_signal(self, event):
@@ -56,15 +61,30 @@ class ConsultationConsumer(AsyncWebsocketConsumer):
         if not booking:
             return False
         if self.role == "driver":
-            return bool(self.ambulance_id and str(booking.ambulance_id) == str(self.ambulance_id))
+            # Accept if ambulance_id matches OR if driver email matches booking.driver_email
+            ambulance_match = bool(self.ambulance_id and str(booking.ambulance_id) == str(self.ambulance_id))
+            email_match = bool(self.email and booking.driver_email and str(booking.driver_email).lower() == str(self.email).lower())
+            return ambulance_match or email_match
+        # Staff: look up by staff_id + email
         staff = HospitalStaff.objects.filter(staff_id__iexact=self.staff_id, email__iexact=self.email, is_active=True).first()
         if not staff:
             return False
+        # Accept if staff belongs to the assigned hospital for this booking
+        if booking.assigned_hospital_id and staff.hospital_id == booking.assigned_hospital_id:
+            return True
+        # Also accept if staff is explicitly listed in assigned_doctors_json
         try:
             team = json.loads(booking.assigned_doctors_json or "[]")
         except (TypeError, json.JSONDecodeError):
             team = []
-        return any(isinstance(member, dict) and (str(member.get("id", "")) == str(staff.id) or str(member.get("staff_id", "")).lower() == staff.staff_id.lower() or str(member.get("full_name", member.get("name", ""))).strip().lower() == staff.full_name.strip().lower()) for member in team)
+        return any(
+            isinstance(member, dict) and (
+                str(member.get("id", "")) == str(staff.id)
+                or str(member.get("staff_id", "")).lower() == staff.staff_id.lower()
+                or str(member.get("full_name", member.get("name", ""))).strip().lower() == staff.full_name.strip().lower()
+            )
+            for member in team
+        )
 
 
 class BookingChatConsumer(AsyncWebsocketConsumer):

@@ -1024,18 +1024,30 @@ def _booking_team(booking):
 def _driver_can_access_booking(request, booking):
     body = _json_body(request) or {}
     ambulance_id = _to_int(body.get("ambulance_id") or request.POST.get("ambulance_id") or request.GET.get("ambulance_id"), -1)
-    if ambulance_id < 0 or booking.ambulance_id != ambulance_id:
-        return False
-    ambulance = Ambulance.objects.filter(id=ambulance_id).first()
-    if not ambulance:
-        return False
     email = str(body.get("driver_email") or request.POST.get("driver_email") or request.GET.get("driver_email") or "").strip().lower()
     name = str(body.get("driver_name") or request.POST.get("driver_name") or request.GET.get("driver_name") or "").strip().lower()
-    return bool(
-        (email and str(ambulance.driver_email or "").strip().lower() == email)
-        or (name and str(ambulance.driver or "").strip().lower() == name)
-        or (not email and not name and booking.driver)
-    )
+
+    # 1. Match by driver_email on booking
+    if email and booking.driver_email and str(booking.driver_email).strip().lower() == email:
+        return True
+    # 2. Match by driver name on booking
+    if name and booking.driver and str(booking.driver).strip().lower() == name:
+        return True
+    # 3. Match by ambulance_id
+    if ambulance_id > 0 and booking.ambulance_id == ambulance_id:
+        ambulance = Ambulance.objects.filter(id=ambulance_id).first()
+        if ambulance:
+            if email and str(ambulance.driver_email or "").strip().lower() == email:
+                return True
+            if name and str(ambulance.driver or "").strip().lower() == name:
+                return True
+            if not email and not name:
+                return True
+        return True
+    # 4. Fallback if booking has an assigned ambulance matching ambulance_id
+    if booking.ambulance_id and ambulance_id == booking.ambulance_id:
+        return True
+    return False
 
 
 def _staff_can_access_booking(request, booking):
@@ -1044,14 +1056,13 @@ def _staff_can_access_booking(request, booking):
     staff = HospitalStaff.objects.select_related("hospital").filter(staff_id__iexact=staff_id, email__iexact=email, is_active=True).first()
     if not staff:
         return False
-    same_hospital = booking.assigned_hospital_id == staff.hospital_id or (
-        staff.hospital.name and str(booking.assigned_hospital_name or booking.destination).strip().lower() == staff.hospital.name.strip().lower()
+    same_hospital = (
+        (booking.assigned_hospital_id and booking.assigned_hospital_id == staff.hospital_id)
+        or (staff.hospital and staff.hospital.name and str(booking.assigned_hospital_name or booking.destination).strip().lower() == staff.hospital.name.strip().lower())
     )
-    if not same_hospital:
-        return False
-    team = _booking_team(booking)
-    if not team:
+    if same_hospital:
         return True
+    team = _booking_team(booking)
     return any(isinstance(member, dict) and (
         str(member.get("id", "")) == str(staff.id)
         or str(member.get("staff_id", "")).lower() == staff.staff_id.lower()
@@ -1081,6 +1092,11 @@ def _video_request_to_dict(item):
 
 
 def _assigned_team_member(booking, staff):
+    # Allow if staff belongs to the hospital assigned to this emergency booking
+    if booking.assigned_hospital_id and staff.hospital_id == booking.assigned_hospital_id:
+        return True
+    if staff.hospital and staff.hospital.name and str(booking.assigned_hospital_name or booking.destination).strip().lower() == staff.hospital.name.strip().lower():
+        return True
     return any(isinstance(member, dict) and (
         str(member.get("id", "")) == str(staff.id)
         or str(member.get("staff_id", "")).lower() == staff.staff_id.lower()
@@ -1174,15 +1190,26 @@ def driver_assigned_bookings(request):
     if request.method != "GET":
         return JsonResponse({"error": "GET only"}, status=405)
     ambulance_id = _to_int(request.GET.get("ambulance_id"), -1)
-    if ambulance_id < 0:
-        return JsonResponse({"error": "ambulance_id is required"}, status=400)
-    ambulance = Ambulance.objects.filter(id=ambulance_id).first()
-    if not ambulance:
-        return JsonResponse({"error": "Ambulance not found"}, status=404)
     email = str(request.GET.get("driver_email", "")).strip().lower()
-    if email and str(ambulance.driver_email or "").strip().lower() != email:
-        return JsonResponse({"error": "Driver is not assigned to this ambulance"}, status=403)
-    bookings = Booking.objects.filter(ambulance_id=ambulance_id).exclude(status__in=["completed", "cancelled"]).order_by("-created_at")[:100]
+
+    ambulance = None
+    if ambulance_id > 0:
+        ambulance = Ambulance.objects.filter(id=ambulance_id).first()
+    if not ambulance and email:
+        ambulance = Ambulance.objects.filter(driver_email__iexact=email).first()
+        if ambulance:
+            ambulance_id = ambulance.id
+
+    if ambulance_id > 0 and ambulance and email:
+        if str(ambulance.driver_email or "").strip().lower() != email:
+            return JsonResponse({"error": "Driver is not assigned to this ambulance"}, status=403)
+
+    if ambulance_id > 0:
+        bookings = Booking.objects.filter(ambulance_id=ambulance_id).exclude(status__in=["completed", "cancelled"]).order_by("-created_at")[:100]
+    elif email:
+        bookings = Booking.objects.filter(driver_email__iexact=email).exclude(status__in=["completed", "cancelled"]).order_by("-created_at")[:100]
+    else:
+        return JsonResponse({"error": "ambulance_id or driver_email is required"}, status=400)
     rows = []
     for booking in bookings:
         row = booking_to_dict(booking)
