@@ -173,12 +173,30 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60
 
 # ─── Cache (OTP storage) ──────────────────────────────────────────────────────
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "swiftrescue-cache",
+# Priority: Redis -> Database (Render PostgreSQL) -> LocMem (local dev only)
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "LOCATION": REDIS_URL,
+        }
     }
-}
+elif database_url or os.getenv("POSTGRES_DB"):
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "django_cache",
+            "TIMEOUT": 300,
+            "OPTIONS": {"MAX_ENTRIES": 1000},
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "swiftrescue-cache",
+        }
+    }
 
 # ─── Email — Gmail SMTP ───────────────────────────────────────────────────────
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"

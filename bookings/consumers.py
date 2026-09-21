@@ -65,3 +65,64 @@ class ConsultationConsumer(AsyncWebsocketConsumer):
         except (TypeError, json.JSONDecodeError):
             team = []
         return any(isinstance(member, dict) and (str(member.get("id", "")) == str(staff.id) or str(member.get("staff_id", "")).lower() == staff.staff_id.lower() or str(member.get("full_name", member.get("name", ""))).strip().lower() == staff.full_name.strip().lower()) for member in team)
+
+
+class BookingChatConsumer(AsyncWebsocketConsumer):
+    """Realtime chat consumer between patient, driver, and hospital admin."""
+
+    async def connect(self):
+        self.thread_id = int(self.scope["url_route"]["kwargs"].get("thread_id", 0))
+        self.group_name = f"chat_{self.thread_id}"
+        query = parse_qs(self.scope.get("query_string", b"").decode("utf-8"))
+        self.role = (query.get("role", ["user"])[0] or "user").lower()
+        self.name = query.get("name", ["User"])[0] or "User"
+
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
+
+        # Send initial presence acknowledgement
+        await self.send(text_data=json.dumps({
+            "type": "presence",
+            "presence": {
+                f"{self.role}_online": True,
+                f"{self.role}_typing": False,
+            }
+        }))
+
+    async def disconnect(self, code):
+        if getattr(self, "group_name", None):
+            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+
+    async def receive(self, text_data=None, bytes_data=None):
+        if not text_data or not getattr(self, "group_name", None):
+            return
+        try:
+            payload = json.loads(text_data)
+        except (TypeError, json.JSONDecodeError):
+            return
+
+        msg_type = payload.get("type", "message")
+        if msg_type == "read":
+            return
+
+        if msg_type == "typing":
+            await self.channel_layer.group_send(self.group_name, {
+                "type": "chat.presence",
+                "presence": {f"{self.role}_typing": bool(payload.get("typing", False))}
+            })
+            return
+
+        # Broadcast chat message to group
+        await self.channel_layer.group_send(self.group_name, {
+            "type": "chat.message",
+            "payload": payload
+        })
+
+    async def chat_message(self, event):
+        await self.send(text_data=json.dumps(event.get("payload") or {}))
+
+    async def chat_presence(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "presence",
+            "presence": event.get("presence", {})
+        }))

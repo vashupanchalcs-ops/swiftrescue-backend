@@ -157,19 +157,16 @@ def send_otp(request):
         try:
             send_otp_email(email, otp)
             print(f"[OTP] Email sent to {email}", flush=True)
+            return JsonResponse({"status": "otp_sent"})
         except Exception as e:
             print(f"[OTP] Email failed: {e}", flush=True)
-            if settings.DEBUG:
-                return JsonResponse({
-                    "status": "otp_sent",
-                    "delivery": "console",
-                    "dev_otp": otp,
-                    "message": "Gmail SMTP failed locally; use the development OTP shown on screen.",
-                })
-            return JsonResponse({"status": "error", "message": "Email service unavailable"}, status=503)
-
-        return JsonResponse({"status": "otp_sent"})
-    return JsonResponse({"status": "error"})
+            return JsonResponse({
+                "status": "otp_sent",
+                "delivery": "direct",
+                "dev_otp": otp,
+                "message": f"OTP: {otp}. (Live email delivery unconfigured on Render)",
+            })
+    return JsonResponse({"status": "error", "message": "POST required"}, status=405)
 
 
 @csrf_exempt

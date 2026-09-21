@@ -1,1 +1,1 @@
-web: export ASGI_THREADS=${ASGI_THREADS:-4}; daphne -b 0.0.0.0 -p $PORT ambulance_tracker.asgi:application
+web: python manage.py createcachetable --dry-run >/dev/null 2>&1 || python manage.py createcachetable; export ASGI_THREADS=${ASGI_THREADS:-4}; daphne -b 0.0.0.0 -p $PORT ambulance_tracker.asgi:application
