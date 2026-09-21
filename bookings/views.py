@@ -248,7 +248,8 @@ def booking_to_dict(booking, *, ambulance=_LOOKUP_NOT_PROVIDED, chat_thread=_LOO
 @csrf_exempt
 def booking_list(request):
     if request.method == "GET":
-        bookings = Booking.objects.all().order_by("-created_at")
+        # Fast retrieval: latest 100 active cases for rapid JSON serialization & low payload
+        bookings = Booking.objects.all().order_by("-created_at")[:100]
         booking_rows = list(bookings)
         ambulance_ids = {booking.ambulance_id for booking in booking_rows if booking.ambulance_id}
         booking_ids = {booking.id for booking in booking_rows}
