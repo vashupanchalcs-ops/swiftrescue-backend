@@ -181,8 +181,12 @@ CELERY_TASK_TIME_LIMIT = 30 * 60
 if REDIS_URL:
     CACHES = {
         "default": {
-            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            # channels_redis is only a Channels layer; it is not a Django
+            # cache backend. Using it here makes cache.set()/get() fail and
+            # breaks OTP delivery before the email provider is called.
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
             "LOCATION": REDIS_URL,
+            "TIMEOUT": 300,
         }
     }
 elif database_url or os.getenv("POSTGRES_DB"):

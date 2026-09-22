@@ -2,6 +2,7 @@ import json
 import threading
 
 from django.core.mail import send_mail
+from django.db import transaction
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -327,9 +328,13 @@ def booking_list(request):
 
 
 @csrf_exempt
+@transaction.atomic
 def booking_detail(request, id):
     try:
-        booking = Booking.objects.get(id=id)
+        # Assignment actions can arrive together from the admin UI and the
+        # polling clients. Serialize the booking row so the last request
+        # cannot silently overwrite a partially applied assignment.
+        booking = Booking.objects.select_for_update().get(id=id)
     except Booking.DoesNotExist:
         return JsonResponse({"error": "Not found"}, status=404)
 
@@ -367,7 +372,7 @@ def booking_detail(request, id):
 
     ambulance_value = data.get("assign_ambulance_id", data.get("reassign_ambulance_id"))
     if ambulance_value is not None:
-        ambulance = Ambulance.objects.filter(id=_to_int(ambulance_value, -1)).first()
+        ambulance = Ambulance.objects.select_for_update().filter(id=_to_int(ambulance_value, -1)).first()
         if not ambulance:
             return JsonResponse({"error": "Valid ambulance required for assignment"}, status=400)
         if ambulance.id != booking.ambulance_id and ambulance.status != "available":
@@ -402,7 +407,7 @@ def booking_detail(request, id):
         booking.is_user_selected_hospital = _to_bool(data["is_user_selected_hospital"])
 
     if "assign_hospital_id" in data:
-        hospital = Hospital.objects.filter(id=_to_int(data["assign_hospital_id"], -1), is_active=True).first()
+        hospital = Hospital.objects.select_for_update().filter(id=_to_int(data["assign_hospital_id"], -1), is_active=True).first()
         if not hospital:
             return JsonResponse({"error": "Valid active hospital required"}, status=400)
         booking.assigned_hospital_id = hospital.id
@@ -780,6 +785,7 @@ Driver: {booking.driver} ({booking.driver_contact or '-'})
 
 
 @csrf_exempt
+@transaction.atomic
 def booking_hospital_response(request, id):
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
@@ -790,7 +796,7 @@ def booking_hospital_response(request, id):
     if response not in {"ready", "not_ready"}:
         return JsonResponse({"error": "hospital_response must be ready or not_ready"}, status=400)
     try:
-        booking = Booking.objects.get(id=id)
+        booking = Booking.objects.select_for_update().get(id=id)
     except Booking.DoesNotExist:
         return JsonResponse({"error": "Not found"}, status=404)
     if not booking.assigned_hospital_id:
@@ -803,7 +809,7 @@ def booking_hospital_response(request, id):
     booking.save(update_fields=["hospital_response", "hospital_response_note", "hospital_responded_at"])
 
     # Real-time update of hospital available beds & status
-    hospital = Hospital.objects.filter(id=booking.assigned_hospital_id).first()
+    hospital = Hospital.objects.select_for_update().filter(id=booking.assigned_hospital_id).first()
     if hospital:
         if old_response != "ready" and response == "ready":
             # Booking accepted: decrement available beds

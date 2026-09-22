@@ -145,10 +145,22 @@ def favicon(request):
 @csrf_exempt
 def send_otp(request):
     if request.method == "POST":
-        data  = json.loads(request.body)
-        email = data.get("email")
+        try:
+            data = json.loads(request.body or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return JsonResponse({"status": "error", "message": "Invalid JSON body"}, status=400)
+        email = str(data.get("email", "")).strip().lower()
+        if not email:
+            return JsonResponse({"status": "error", "message": "Email is required"}, status=400)
         otp   = str(random.randint(100000, 999999))
-        cache.set(f"otp_{email}", otp, timeout=300)
+        try:
+            cache.set(f"otp_{email}", otp, timeout=300)
+        except Exception:
+            logger.exception("[OTP] Unable to store OTP for %s", email)
+            return JsonResponse(
+                {"status": "error", "message": "OTP service is temporarily unavailable. Please try again."},
+                status=503,
+            )
 
         print(f"\n{'='*40}", flush=True)
         print(f"[OTP] Email : {email}", flush=True)
@@ -173,9 +185,12 @@ def send_otp(request):
 @csrf_exempt
 def verify_otp(request):
     if request.method == "POST":
-        data      = json.loads(request.body)
-        user_otp  = data.get("otp")
-        email     = data.get("email")
+        try:
+            data = json.loads(request.body or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return JsonResponse({"status": "error", "message": "Invalid JSON body"}, status=400)
+        user_otp  = str(data.get("otp", "")).strip()
+        email     = str(data.get("email", "")).strip().lower()
         saved_otp = cache.get(f"otp_{email}")
         if saved_otp and user_otp == saved_otp:
             cache.delete(f"otp_{email}")
