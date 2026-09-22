@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.contrib.auth.hashers import make_password, check_password
+from django.core import signing
 from decimal import Decimal, InvalidOperation
 from ambulance.models import Ambulance
 from hospitals.models import Hospital, HospitalStaff, HospitalBed
@@ -670,6 +671,21 @@ def hospital_payment_detail(request, hospital_id, booking_id):
         hospital = Hospital.objects.get(id=hospital_id)
     except Hospital.DoesNotExist:
         return JsonResponse({"error": "Hospital not found"}, status=404)
+
+    authorization = str(request.headers.get("Authorization", ""))
+    if request.method == "PATCH":
+        if not authorization.startswith("Bearer "):
+            return JsonResponse({"error": "Hospital session authorization is required"}, status=401)
+        try:
+            session = signing.loads(authorization[7:].strip(), max_age=86400)
+        except signing.BadSignature:
+            return JsonResponse({"error": "Hospital session authorization is invalid or expired"}, status=401)
+        if (
+            session.get("role") != "hospital"
+            or int(session.get("hospital_id", 0)) != hospital.id
+            or str(session.get("email", "")).strip().casefold() != str(hospital.email or "").strip().casefold()
+        ):
+            return JsonResponse({"error": "Hospital session is not authorized for this account"}, status=403)
 
     hospital_filter = Q(assigned_hospital_id=hospital.id)
     if hospital.email:

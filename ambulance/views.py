@@ -3,6 +3,7 @@ from django.http import HttpResponse, JsonResponse
 from django.core.mail import send_mail
 from django.conf import settings
 from django.core.cache import cache
+from django.core import signing
 from django.utils import timezone
 from ambulance.models import Ambulance, DriverLocation, SuggestedRoute
 import json
@@ -286,7 +287,11 @@ def validate_contract_access(request):
         return JsonResponse({"valid": False, "error": "Hospital contract details do not match"}, status=403)
     if (item.registration_number or "").replace(" ", "").lower() != registration:
         return JsonResponse({"valid": False, "error": "Hospital registration number does not match"}, status=403)
-    return JsonResponse({"valid": True, "role": "hospital", "hospital_id": item.id, "contract_id": item.hospital_contract_id, "hospital_contract_id": item.hospital_contract_id, "registration_number": item.registration_number, "hospital_name": item.name})
+    session_token = signing.dumps(
+        {"role": "hospital", "hospital_id": item.id, "email": item.email},
+        compress=True,
+    )
+    return JsonResponse({"valid": True, "role": "hospital", "hospital_id": item.id, "contract_id": item.hospital_contract_id, "hospital_contract_id": item.hospital_contract_id, "registration_number": item.registration_number, "hospital_name": item.name, "session_token": session_token})
 
 
 def ambulance_to_dict(a):
