@@ -3,6 +3,7 @@ from django.http import HttpResponse, JsonResponse
 from django.core.mail import send_mail
 from django.conf import settings
 from django.core.cache import cache
+from django.core.cache.backends.locmem import LocMemCache
 from django.core import signing
 from django.utils import timezone
 from ambulance.models import Ambulance, DriverLocation, SuggestedRoute
@@ -15,6 +16,41 @@ import urllib.error
 import base64
 
 logger = logging.getLogger(__name__)
+
+# Render can temporarily make the database cache table or Redis unavailable
+# while the web process is still healthy. Keep a same-process OTP mirror so a
+# transient cache outage does not turn sign-up into a 503. The primary cache
+# is still used whenever it is available, and both stores expire after 5 min.
+otp_fallback_cache = LocMemCache("swiftrescue-otp-fallback", {})
+
+
+def _otp_cache_set(key, value, timeout=300):
+    try:
+        cache.set(key, value, timeout=timeout)
+    except Exception:
+        logger.exception("[OTP] Primary cache unavailable while storing %s", key)
+    try:
+        otp_fallback_cache.set(key, value, timeout=timeout)
+    except Exception:
+        logger.exception("[OTP] Fallback cache unavailable while storing %s", key)
+        raise
+
+
+def _otp_cache_get(key):
+    try:
+        value = cache.get(key)
+    except Exception:
+        logger.exception("[OTP] Primary cache unavailable while reading %s", key)
+        value = None
+    return value if value is not None else otp_fallback_cache.get(key)
+
+
+def _otp_cache_delete(key):
+    try:
+        cache.delete(key)
+    except Exception:
+        logger.exception("[OTP] Primary cache unavailable while deleting %s", key)
+    otp_fallback_cache.delete(key)
 
 
 def send_otp_email(recipient, otp):
@@ -154,9 +190,8 @@ def send_otp(request):
             return JsonResponse({"status": "error", "message": "Email is required"}, status=400)
         otp   = str(random.randint(100000, 999999))
         try:
-            cache.set(f"otp_{email}", otp, timeout=300)
+            _otp_cache_set(f"otp_{email}", otp, timeout=300)
         except Exception:
-            logger.exception("[OTP] Unable to store OTP for %s", email)
             return JsonResponse(
                 {"status": "error", "message": "OTP service is temporarily unavailable. Please try again."},
                 status=503,
@@ -191,9 +226,9 @@ def verify_otp(request):
             return JsonResponse({"status": "error", "message": "Invalid JSON body"}, status=400)
         user_otp  = str(data.get("otp", "")).strip()
         email     = str(data.get("email", "")).strip().lower()
-        saved_otp = cache.get(f"otp_{email}")
+        saved_otp = _otp_cache_get(f"otp_{email}")
         if saved_otp and user_otp == saved_otp:
-            cache.delete(f"otp_{email}")
+            _otp_cache_delete(f"otp_{email}")
             return JsonResponse({"status": "success", "email": email})
         else:
             return JsonResponse({"status": "invalid", "message": "Invalid OTP"})
@@ -212,7 +247,7 @@ def send_phone_otp(request):
         return JsonResponse({"status": "error", "message": "Enter a valid 10-digit phone number"}, status=400)
 
     otp = str(random.randint(100000, 999999))
-    cache.set(f"phone_otp_{phone}", otp, timeout=300)
+    _otp_cache_set(f"phone_otp_{phone}", otp, timeout=300)
 
     print(f"\n{'='*40}", flush=True)
     print(f"[PHONE OTP] Number : +91{phone}", flush=True)
@@ -230,10 +265,10 @@ def verify_phone_otp(request):
     data      = json.loads(request.body)
     phone     = data.get("phone", "").strip().replace(" ", "").replace("+91", "")
     user_otp  = data.get("otp", "").strip()
-    saved_otp = cache.get(f"phone_otp_{phone}")
+    saved_otp = _otp_cache_get(f"phone_otp_{phone}")
 
     if saved_otp and user_otp == saved_otp:
-        cache.delete(f"phone_otp_{phone}")
+        _otp_cache_delete(f"phone_otp_{phone}")
         return JsonResponse({"status": "success", "phone": phone})
     else:
         return JsonResponse({"status": "invalid", "message": "Invalid or expired OTP"})
