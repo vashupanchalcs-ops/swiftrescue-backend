@@ -177,25 +177,26 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60
 
 # ─── Cache (OTP storage) ──────────────────────────────────────────────────────
-# Priority: Redis -> Database (Render PostgreSQL) -> LocMem (local dev only)
-if REDIS_URL:
-    CACHES = {
-        "default": {
-            # channels_redis is only a Channels layer; it is not a Django
-            # cache backend. Using it here makes cache.set()/get() fail and
-            # breaks OTP delivery before the email provider is called.
-            "BACKEND": "django.core.cache.backends.redis.RedisCache",
-            "LOCATION": REDIS_URL,
-            "TIMEOUT": 300,
-        }
-    }
-elif database_url or os.getenv("POSTGRES_DB"):
+# Priority: Render PostgreSQL -> Redis -> LocMem (local dev only).
+# PostgreSQL is already required by the deployed service and is a safer
+# cross-worker OTP store when the optional Redis service is unavailable.
+if database_url or os.getenv("POSTGRES_DB"):
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.db.DatabaseCache",
             "LOCATION": "django_cache",
             "TIMEOUT": 300,
             "OPTIONS": {"MAX_ENTRIES": 1000},
+        }
+    }
+elif REDIS_URL:
+    CACHES = {
+        "default": {
+            # channels_redis is only a Channels layer; it is not a Django
+            # cache backend. Use Django's RedisCache for OTP storage.
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+            "TIMEOUT": 300,
         }
     }
 else:

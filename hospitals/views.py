@@ -1048,7 +1048,7 @@ def staff_notifications(request):
         except (TypeError, ValueError):
             team = []
         assigned = any(isinstance(member, dict) and (str(member.get("id", "")) == str(staff.id) or str(member.get("staff_id", "")).lower() == staff.staff_id.lower() or str(member.get("full_name", member.get("name", ""))).strip().lower() == staff.full_name.strip().lower()) for member in team)
-        if not assigned and staff.assigned_booking_id == booking.id:
+        if not assigned and getattr(staff, "assigned_booking_id", None) == booking.id:
             assigned = True
         if not assigned and staff.full_name:
             assigned = staff.full_name.strip().lower() in str(getattr(booking, "assigned_doctor_names", "")).lower()
