@@ -3,6 +3,7 @@ from django.http import JsonResponse
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.contrib.auth.hashers import make_password, check_password
 from django.core import signing
 from decimal import Decimal, InvalidOperation
@@ -264,6 +265,46 @@ def ensure_hospital_beds(hospital):
     return list(HospitalBed.objects.filter(hospital_id=hospital.id))
 
 
+def reconcile_hospital_bed_availability(hospital):
+    """Apply the hospital's edited capacity to unassigned persisted beds.
+
+    Assigned/occupied beds are never touched. Only free rows can move between
+    available and reserved, which keeps the summary counters and bed console
+    consistent after a resource edit.
+    """
+    def as_non_negative_int(value):
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    with transaction.atomic():
+        beds = list(HospitalBed.objects.select_for_update().filter(hospital_id=hospital.id))
+        target_available = min(len(beds), as_non_negative_int(hospital.available_beds))
+        target_icu = min(len(beds), as_non_negative_int(hospital.icu_beds))
+        target_icu_available = min(target_icu, as_non_negative_int(hospital.available_icu_beds))
+        target_general_available = max(0, target_available - target_icu_available)
+
+        for bed_type, desired_available in (
+            ("icu", target_icu_available),
+            ("general", target_general_available),
+        ):
+            free_beds = [
+                bed for bed in beds
+                if bed.bed_type == bed_type
+                and bed.assigned_booking_id is None
+                and bed.status in {"available", "reserved"}
+            ]
+            for index, bed in enumerate(free_beds):
+                next_status = "available" if index < desired_available else "reserved"
+                if bed.status != next_status:
+                    bed.status = next_status
+                    bed.last_status_update = timezone.now()
+                    bed.save(update_fields=["status", "last_status_update"])
+
+        sync_hospital_bed_counts(hospital.id)
+
+
 @csrf_exempt
 def hospital_beds(request, hospital_id):
     """GET the complete persisted bed inventory. PATCH is handled separately."""
@@ -280,10 +321,11 @@ def hospital_beds(request, hospital_id):
 
 
 @csrf_exempt
+@transaction.atomic
 def hospital_bed_detail(request, bed_id):
     """PATCH a single bed's fields."""
     try:
-        bed = HospitalBed.objects.get(id=bed_id)
+        bed = HospitalBed.objects.select_for_update().get(id=bed_id)
     except HospitalBed.DoesNotExist:
         return JsonResponse({"error": "Bed not found"}, status=404)
 
@@ -301,7 +343,12 @@ def hospital_bed_detail(request, bed_id):
         ]
         for field in allowed:
             if field in data:
-                setattr(bed, field, data[field])
+                value = data[field]
+                if field == "admission_time" and isinstance(value, str):
+                    value = parse_datetime(value)
+                    if value is None:
+                        return JsonResponse({"error": "admission_time must be a valid ISO datetime"}, status=400)
+                setattr(bed, field, value)
         bed.last_status_update = timezone.now()
         bed.save()
         sync_hospital_bed_counts(bed.hospital_id)
@@ -311,6 +358,7 @@ def hospital_bed_detail(request, bed_id):
 
 
 @csrf_exempt
+@transaction.atomic
 def assign_bed_to_booking(request, hospital_id):
     """POST: assign a specific or first available bed to a booking."""
     import json as _json
@@ -326,26 +374,33 @@ def assign_bed_to_booking(request, hospital_id):
         return JsonResponse({"error": "booking_id required"}, status=400)
 
     try:
-        booking = Booking.objects.get(id=booking_id)
+        booking = Booking.objects.select_for_update().get(id=booking_id)
     except Booking.DoesNotExist:
         return JsonResponse({"error": "Booking not found"}, status=404)
 
     bed_id = data.get("bed_id")
     bed = None
     if bed_id:
-        bed = HospitalBed.objects.filter(id=bed_id).first()
+        bed = HospitalBed.objects.select_for_update().filter(id=bed_id, hospital_id=hospital_id).first()
+        if not bed:
+            return JsonResponse({"error": "Selected bed does not belong to this hospital"}, status=400)
+        if bed.assigned_booking_id not in (None, booking.id) and bed.status != "available":
+            return JsonResponse({"error": "Selected bed is already assigned"}, status=409)
     if not bed:
         bed_type_pref = str(data.get("bed_type", "general")).lower()
-        bed = HospitalBed.objects.filter(hospital_id=hospital_id, bed_type=bed_type_pref, status="available").first()
+        bed = HospitalBed.objects.select_for_update().filter(hospital_id=hospital_id, bed_type=bed_type_pref, status="available").first()
     if not bed:
         # Fallback to any available bed in hospital
-        bed = HospitalBed.objects.filter(hospital_id=hospital_id, status="available").first()
+        bed = HospitalBed.objects.select_for_update().filter(hospital_id=hospital_id, status="available").first()
     if not bed:
         return JsonResponse({"error": "No available bed found in this hospital"}, status=409)
 
     # If this booking already held another bed (e.g. switching to ICU or different bed), free it
     if booking.assigned_bed_id and booking.assigned_bed_id != bed.id:
-        old_bed = HospitalBed.objects.filter(id=booking.assigned_bed_id).first()
+        old_bed = HospitalBed.objects.select_for_update().filter(
+            id=booking.assigned_bed_id,
+            hospital_id=hospital_id,
+        ).first()
         if old_bed:
             old_bed.status = "available"
             old_bed.assigned_booking_id = None
@@ -372,6 +427,7 @@ def assign_bed_to_booking(request, hospital_id):
     bed.medical_condition = booking.patient_condition or ("Critical Care Required" if bed.bed_type == "icu" else "General Inpatient Care")
     bed.vitals_summary = booking.vitals_summary
     bed.attending_doctor = booking.assigned_doctor_names
+    bed.assigned_staff_json = booking.assigned_doctors_json or "[]"
     bed.admission_time = timezone.now()
     bed.last_status_update = timezone.now()
     bed.save()
@@ -387,6 +443,7 @@ def assign_bed_to_booking(request, hospital_id):
 
 
 @csrf_exempt
+@transaction.atomic
 def switch_to_icu_bed(request, hospital_id):
     """POST: switch patient from general bed to available ICU bed."""
     import json as _json
@@ -399,15 +456,18 @@ def switch_to_icu_bed(request, hospital_id):
 
     booking_id = data.get("booking_id")
     try:
-        booking = Booking.objects.get(id=booking_id)
+        booking = Booking.objects.select_for_update().get(id=booking_id)
     except Booking.DoesNotExist:
         return JsonResponse({"error": "Booking not found"}, status=404)
 
     # Get current general bed
-    current_bed = HospitalBed.objects.filter(id=booking.assigned_bed_id).first() if booking.assigned_bed_id else None
+    current_bed = HospitalBed.objects.select_for_update().filter(
+        id=booking.assigned_bed_id,
+        hospital_id=hospital_id,
+    ).first() if booking.assigned_bed_id else None
 
     # Find available ICU bed
-    icu_bed = HospitalBed.objects.filter(hospital_id=hospital_id, bed_type="icu", status="available").first()
+    icu_bed = HospitalBed.objects.select_for_update().filter(hospital_id=hospital_id, bed_type="icu", status="available").first()
     if not icu_bed:
         return JsonResponse({"error": "No available ICU beds"}, status=409)
 
@@ -796,8 +856,23 @@ def hospital_resources(request, id):
         return JsonResponse({"error": "Method not allowed"}, status=405)
     if request.method == "PATCH":
         data = json.loads(request.body or b"{}")
+        requested_capacity = {
+            field: data[field]
+            for field in CAPACITY_FIELDS
+            if field in data
+        }
         apply_hospital_payload(hospital, data)
         hospital.save()
+        if requested_capacity:
+            # Ensure missing rows exist, then reconcile free-bed statuses with
+            # the capacity the hospital just saved. Without this step the next
+            # bed refresh recalculated the old count from stale bed rows.
+            ensure_hospital_beds(hospital)
+            hospital.refresh_from_db()
+            for field, value in requested_capacity.items():
+                setattr(hospital, field, value)
+            hospital.save(update_fields=[*requested_capacity.keys(), "last_capacity_updated", "updated_at"])
+            reconcile_hospital_bed_availability(hospital)
     return JsonResponse(hospital_to_dict(hospital))
 
 
