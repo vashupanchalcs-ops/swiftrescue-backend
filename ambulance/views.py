@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # transient cache outage does not turn sign-up into a 503. The primary cache
 # is still used whenever it is available, and both stores expire after 5 min.
 otp_fallback_cache = LocMemCache("swiftrescue-otp-fallback", {})
+driver_notification_fallback_cache = LocMemCache("swiftrescue-driver-notifications", {})
 
 
 def _otp_cache_set(key, value, timeout=300):
@@ -568,18 +569,33 @@ def ambulance_change_request_delete(request):
 
 @csrf_exempt
 def get_driver_notifications(request):
+    def read(key):
+        try:
+            value = cache.get(key)
+        except Exception:
+            logger.exception("[DRIVER NOTIFICATIONS] Primary cache unavailable while reading")
+            value = None
+        return value if value is not None else (driver_notification_fallback_cache.get(key) or [])
+
+    def write(key, value):
+        try:
+            cache.set(key, value, timeout=CHANGE_REQ_TIMEOUT)
+        except Exception:
+            logger.exception("[DRIVER NOTIFICATIONS] Primary cache unavailable while writing")
+        driver_notification_fallback_cache.set(key, value, timeout=CHANGE_REQ_TIMEOUT)
+
     if request.method == "GET":
         email     = request.GET.get("email", "")
         notif_key = f"dr_server_notif_{email}"
-        notifs    = cache.get(notif_key) or []
+        notifs    = read(notif_key)
         return JsonResponse(notifs, safe=False)
     if request.method == "POST":
         data      = json.loads(request.body)
         email     = data.get("email", "")
         notif_key = f"dr_server_notif_{email}"
-        notifs    = cache.get(notif_key) or []
+        notifs    = read(notif_key)
         updated   = [{ **n, "read": True } for n in notifs]
-        cache.set(notif_key, updated, timeout=CHANGE_REQ_TIMEOUT)
+        write(notif_key, updated)
         return JsonResponse({"status": "marked_read"})
     return JsonResponse({"error": "Method not allowed"}, status=405)
 

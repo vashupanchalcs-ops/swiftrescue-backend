@@ -184,13 +184,20 @@ def respond_route(request, route_id):
 def driver_active_route(request):
     if request.method != "GET":
         return JsonResponse({"error": "GET only"}, status=405)
-    email = request.GET.get("driver_email", "")
-    if not email:
-        return JsonResponse({"error": "driver_email required"}, status=400)
+    email = request.GET.get("driver_email", "").strip().lower()
     try:
-        amb = Ambulance.objects.get(driver_email=email)
-    except Ambulance.DoesNotExist:
+        ambulance_id = int(request.GET.get("ambulance_id", "0"))
+    except (TypeError, ValueError):
+        ambulance_id = 0
+    if not email and ambulance_id <= 0:
+        return JsonResponse({"error": "driver_email or ambulance_id required"}, status=400)
+    amb = Ambulance.objects.filter(id=ambulance_id).first() if ambulance_id > 0 else None
+    if not amb and email:
+        amb = Ambulance.objects.filter(driver_email__iexact=email).first()
+    if not amb:
         return JsonResponse({"error": "No ambulance found"}, status=404)
+    if email and str(amb.driver_email or "").strip().lower() != email:
+        return JsonResponse({"error": "Driver is not assigned to this ambulance"}, status=403)
     route = SuggestedRoute.objects.filter(ambulance=amb, status__in=["pending", "accepted"]).order_by("-created_at").first()
     return JsonResponse(_route_dict(route) if route else {})
 

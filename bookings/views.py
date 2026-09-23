@@ -1222,16 +1222,45 @@ def driver_assigned_bookings(request):
             return JsonResponse({"error": "Driver is not assigned to this ambulance"}, status=403)
 
     if ambulance_id > 0:
-        bookings = Booking.objects.filter(ambulance_id=ambulance_id).exclude(status__in=["completed", "cancelled"]).order_by("-created_at")[:100]
+        bookings = list(
+            Booking.objects.filter(ambulance_id=ambulance_id)
+            .exclude(status__in=["completed", "cancelled"])
+            .order_by("-created_at")[:100]
+        )
     elif email:
-        bookings = Booking.objects.filter(driver_email__iexact=email).exclude(status__in=["completed", "cancelled"]).order_by("-created_at")[:100]
+        bookings = list(
+            Booking.objects.filter(driver_email__iexact=email)
+            .exclude(status__in=["completed", "cancelled"])
+            .order_by("-created_at")[:100]
+        )
     else:
         return JsonResponse({"error": "ambulance_id or driver_email is required"}, status=400)
+
+    # The driver portal opens this endpoint on every tab change. Build all
+    # related data in bulk so a booking card does not wait for N+1 queries.
+    booking_ids = {booking.id for booking in bookings}
+    ambulance_ids = {booking.ambulance_id for booking in bookings if booking.ambulance_id}
+    ambulance_map = {
+        item.id: item
+        for item in Ambulance.objects.filter(id__in=ambulance_ids).only("id", "driver_email")
+    }
+    thread_map = {
+        item.booking_id: item
+        for item in BookingChatThread.objects.filter(booking_id__in=booking_ids).only("id", "booking_id")
+    }
+    photos_by_booking = {booking_id: [] for booking_id in booking_ids}
+    if booking_ids:
+        for photo in PatientConditionPhoto.objects.filter(booking_id__in=booking_ids).order_by("-created_at", "-id"):
+            photos_by_booking.setdefault(photo.booking_id, []).append(_photo_to_dict(photo, request))
     rows = []
     for booking in bookings:
-        row = booking_to_dict(booking)
+        row = booking_to_dict(
+            booking,
+            ambulance=ambulance_map.get(booking.ambulance_id),
+            chat_thread=thread_map.get(booking.id),
+        )
         row["photo_requirements"] = [{"type": key, "label": label, "instruction": PHOTO_REQUIREMENTS[key]} for key, label in PatientConditionPhoto.PHOTO_TYPES]
-        row["condition_photos"] = [_photo_to_dict(photo, request) for photo in booking.condition_photos.all()]
+        row["condition_photos"] = photos_by_booking.get(booking.id, [])
         rows.append(row)
     return JsonResponse(rows, safe=False)
 

@@ -17,12 +17,30 @@ from ambulance.tracking_views import (
 )
 
 from django.http import JsonResponse
+from django.db import connection
+
+
+def _health_response():
+    try:
+        connection.ensure_connection()
+        return JsonResponse({
+            "status": "ok",
+            "service": "aarogya",
+            "database": connection.vendor,
+        })
+    except Exception as exc:
+        return JsonResponse({
+            "status": "degraded",
+            "service": "aarogya",
+            "database": connection.vendor,
+            "database_error": str(exc)[:180],
+        }, status=503)
 
 urlpatterns = [
     path("", views.home),
     path("favicon.ico", views.favicon),
     path("admin/", admin.site.urls),
-    path("api/health/", lambda req: JsonResponse({"status": "ok", "service": "aarogya"})),
+    path("api/health/", lambda req: _health_response()),
 
     # ── OTP & AUTH ──────────────────────────────────
     path("api/send-otp/",         views.send_otp),
