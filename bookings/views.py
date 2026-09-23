@@ -1058,8 +1058,11 @@ def _driver_can_access_booking(request, booking):
     email = str(body.get("driver_email") or request.POST.get("driver_email") or request.GET.get("driver_email") or "").strip().lower()
     name = str(body.get("driver_name") or request.POST.get("driver_name") or request.GET.get("driver_name") or "").strip().lower()
 
-    # 1. Match by driver_email on booking
-    if email and booking.driver_email and str(booking.driver_email).strip().lower() == email:
+    # 1. Match by driver_email on booking when the deployed schema exposes it.
+    # Older Booking rows/models do not have this field; use the linked
+    # ambulance and driver-name fallbacks instead of raising AttributeError.
+    booking_driver_email = getattr(booking, "driver_email", "")
+    if email and booking_driver_email and str(booking_driver_email).strip().lower() == email:
         return True
     # 2. Match by driver name on booking
     if name and booking.driver and str(booking.driver).strip().lower() == name:
@@ -1261,11 +1264,11 @@ def driver_assigned_bookings(request):
             .order_by("-created_at")[:100]
         )
     elif email:
-        bookings = list(
-            Booking.objects.filter(driver_email__iexact=email)
-            .exclude(status__in=["completed", "cancelled"])
-            .order_by("-created_at")[:100]
-        )
+        # Booking stores the assignment through ambulance_id in the deployed
+        # schema; it does not expose a driver_email column. If no matching
+        # ambulance was found above, return an empty result instead of issuing
+        # an invalid ORM lookup.
+        bookings = []
     else:
         return JsonResponse({"error": "ambulance_id or driver_email is required"}, status=400)
 
