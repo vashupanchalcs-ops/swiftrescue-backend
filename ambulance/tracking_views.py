@@ -198,7 +198,12 @@ def driver_active_route(request):
         return JsonResponse({"error": "No ambulance found"}, status=404)
     if email and str(amb.driver_email or "").strip().lower() != email:
         return JsonResponse({"error": "Driver is not assigned to this ambulance"}, status=403)
-    route = SuggestedRoute.objects.filter(ambulance=amb, status__in=["pending", "accepted"]).order_by("-created_at").first()
+    try:
+        route = SuggestedRoute.objects.filter(ambulance=amb, status__in=["pending", "accepted"]).order_by("-created_at").first()
+    except Exception:
+        # A missing/stale route record must not make the whole driver portal
+        # fail; the client can keep showing its cached route and retry.
+        return JsonResponse({})
     return JsonResponse(_route_dict(route) if route else {})
 
 
