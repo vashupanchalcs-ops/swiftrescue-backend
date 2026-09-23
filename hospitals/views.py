@@ -160,10 +160,10 @@ def ensure_hospital_beds(hospital):
 
     Older production data can contain only the first batch of HospitalBed rows
     while the Hospital summary already has the full capacity.  Returning that
-    partial batch makes the home dashboard and the bed console disagree.  Add
-    only missing, unassigned rows here; never delete or rewrite existing beds.
-    New rows are distributed between ICU/general and available/reserved so the
-    persisted inventory reaches the configured summary where possible.
+    partial batch makes the home dashboard and the bed console disagree. Add
+    only missing rows and repair stale unassigned reservations; never rewrite a
+    bed that is linked to a real booking. New beds start available so a fresh
+    hospital inventory is usable immediately.
     """
     def as_non_negative_int(value):
         try:
@@ -175,6 +175,23 @@ def ensure_hospital_beds(hospital):
         existing = list(
             HospitalBed.objects.select_for_update().filter(hospital_id=hospital.id)
         )
+
+        # A previous seed created free beds as ``reserved`` to mirror the
+        # hospital summary. Those rows have no booking and are not genuinely
+        # reserved, so they made the first bed screen show false bookings and
+        # prevented later edits from matching the database. Only repair rows
+        # with no booking; assigned/occupied beds remain untouched.
+        stale_reserved = [
+            bed for bed in existing
+            if bed.status == "reserved" and bed.assigned_booking_id is None
+        ]
+        if stale_reserved:
+            now = timezone.now()
+            for bed in stale_reserved:
+                bed.status = "available"
+                bed.last_status_update = now
+                bed.save(update_fields=["status", "last_status_update", "updated_at"])
+
         current_total = len(existing)
         current_available = sum(b.status == "available" for b in existing)
         current_icu = sum(b.bed_type == "icu" for b in existing)
@@ -201,19 +218,10 @@ def ensure_hospital_beds(hospital):
         icu_to_add = min(total_to_add, max(0, target_icu - current_icu))
         general_to_add = total_to_add - icu_to_add
 
-        available_to_add = min(
-            total_to_add,
-            max(0, target_available - current_available),
-        )
-        icu_available_to_add = min(
-            icu_to_add,
-            available_to_add,
-            max(0, target_icu_available - current_icu_available),
-        )
-        general_available_to_add = min(
-            general_to_add,
-            max(0, available_to_add - icu_available_to_add),
-        )
+        # Newly created beds are immediately available. A bed becomes booked
+        # only through the explicit booking/assignment workflow.
+        icu_available_to_add = icu_to_add
+        general_available_to_add = general_to_add
 
         used_numbers = set(
             str(b.bed_number or "").strip().upper() for b in existing
@@ -257,10 +265,10 @@ def ensure_hospital_beds(hospital):
             or current_icu != as_non_negative_int(hospital.icu_beds)
             or current_icu_available != as_non_negative_int(hospital.available_icu_beds)
         )
-        if created or summary_is_stale:
+        if created or stale_reserved or summary_is_stale:
             sync_hospital_bed_counts(hospital.id)
 
-    if created or summary_is_stale:
+    if created or stale_reserved or summary_is_stale:
         hospital.refresh_from_db()
     return list(HospitalBed.objects.filter(hospital_id=hospital.id))
 
