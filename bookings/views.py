@@ -1,8 +1,10 @@
+import base64
 import json
 import threading
 
 from django.core.mail import send_mail
 from django.db import transaction
+from django.db.utils import OperationalError, ProgrammingError
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -1011,8 +1013,20 @@ PHOTO_REQUIREMENTS = {
 
 
 def _photo_to_dict(photo, request=None):
-    url = photo.image.url if photo.image else ""
-    if request and url:
+    # New uploads are database-backed and remain available after a Render
+    # deploy. Older rows may still reference the legacy media file, so keep a
+    # safe fallback for them and never let a missing file turn the API into a
+    # 500 response.
+    url = str(getattr(photo, "image_data", "") or "")
+    if not url and getattr(photo, "image", None):
+        try:
+            url = photo.image.url
+        except (AttributeError, ValueError, OSError):
+            url = ""
+    # ``image_data`` is a complete data URL. Only legacy relative media paths
+    # need Django's host prefix; prefixing a data URL would corrupt the image
+    # source into an unusable API URL.
+    if request and url and not url.startswith("data:") and not url.startswith(("http://", "https://")):
         url = request.build_absolute_uri(url)
     return {
         "id": photo.id,
@@ -1135,7 +1149,13 @@ def video_call_requests(request):
         if role == "driver":
             if not _driver_can_access_booking(request, booking):
                 return JsonResponse({"error": "Only the assigned driver can view these requests"}, status=403)
-            qs = VideoCallRequest.objects.filter(booking=booking).select_related("staff")
+            try:
+                qs = VideoCallRequest.objects.filter(booking=booking).select_related("staff")
+            except (OperationalError, ProgrammingError):
+                # A rolling Render deployment can briefly serve a worker before
+                # the migration transaction is visible. Return an empty,
+                # usable state instead of breaking the driver portal.
+                return JsonResponse({"booking_id": booking.id, "requests": []})
         elif role == "staff":
             if not _staff_can_access_booking(request, booking):
                 return JsonResponse({"error": "Only allocated staff can view these requests"}, status=403)
@@ -1144,10 +1164,17 @@ def video_call_requests(request):
             staff = HospitalStaff.objects.filter(staff_id__iexact=staff_id, email__iexact=email, is_active=True).first()
             if not staff:
                 return JsonResponse({"error": "Staff account not found or inactive"}, status=404)
-            qs = VideoCallRequest.objects.filter(booking=booking, staff=staff).select_related("staff")
+            try:
+                qs = VideoCallRequest.objects.filter(booking=booking, staff=staff).select_related("staff")
+            except (OperationalError, ProgrammingError):
+                return JsonResponse({"booking_id": booking.id, "requests": []})
         else:
             return JsonResponse({"error": "role must be driver or staff"}, status=400)
-        return JsonResponse({"booking_id": booking.id, "requests": [_video_request_to_dict(item) for item in qs[:20]]})
+        try:
+            rows = [_video_request_to_dict(item) for item in qs[:20]]
+        except (OperationalError, ProgrammingError):
+            rows = []
+        return JsonResponse({"booking_id": booking.id, "requests": rows})
 
     if request.method != "POST":
         return JsonResponse({"error": "GET or POST only"}, status=405)
@@ -1160,15 +1187,21 @@ def video_call_requests(request):
     staff = HospitalStaff.objects.filter(id=staff_profile_id, is_active=True).first()
     if not staff or not _assigned_team_member(booking, staff):
         return JsonResponse({"error": "Video requests can only be sent to staff allocated to this booking"}, status=403)
-    accepted_count = VideoCallRequest.objects.filter(booking=booking, status="accepted").count()
-    existing = VideoCallRequest.objects.filter(booking=booking, staff=staff, status__in=["pending", "accepted"]).order_by("-id").first()
+    try:
+        accepted_count = VideoCallRequest.objects.filter(booking=booking, status="accepted").count()
+        existing = VideoCallRequest.objects.filter(booking=booking, staff=staff, status__in=["pending", "accepted"]).order_by("-id").first()
+    except (OperationalError, ProgrammingError):
+        return JsonResponse({"error": "Video call service is still initializing. Please try again."}, status=503)
     if existing:
         return JsonResponse(_video_request_to_dict(existing), status=200)
     if accepted_count >= 3:
         return JsonResponse({"error": "Maximum 4 participants added (driver + 3 staff)", "code": "MAX_PARTICIPANTS"}, status=409)
     driver_email = str(data.get("driver_email") or request.POST.get("driver_email") or "").strip().lower()
     driver_name = str(data.get("driver_name") or booking.driver or "Driver").strip()
-    item = VideoCallRequest.objects.create(booking=booking, staff=staff, driver_email=driver_email, driver_name=driver_name)
+    try:
+        item = VideoCallRequest.objects.create(booking=booking, staff=staff, driver_email=driver_email, driver_name=driver_name)
+    except (OperationalError, ProgrammingError):
+        return JsonResponse({"error": "Video call service is still initializing. Please try again."}, status=503)
     return JsonResponse(_video_request_to_dict(item), status=201)
 
 
@@ -1277,7 +1310,11 @@ def booking_photos(request, booking_id):
         allowed = role == "admin" or (role == "driver" and _driver_can_access_booking(request, booking)) or (role == "staff" and _staff_can_access_booking(request, booking)) or (hospital_id >= 0 and booking.assigned_hospital_id == hospital_id)
         if not allowed:
             return JsonResponse({"error": "You are not authorised to view these photos"}, status=403)
-        return JsonResponse({"booking_id": booking.id, "photos": [_photo_to_dict(photo, request) for photo in booking.condition_photos.all()]})
+        try:
+            photos = [_photo_to_dict(photo, request) for photo in booking.condition_photos.all()]
+        except (OperationalError, ProgrammingError, ValueError, OSError):
+            photos = []
+        return JsonResponse({"booking_id": booking.id, "photos": photos})
     if request.method != "POST":
         return JsonResponse({"error": "GET or POST only"}, status=405)
     if role != "driver" or not _driver_can_access_booking(request, booking):
@@ -1307,5 +1344,18 @@ def booking_photos(request, booking_id):
             return JsonResponse({"error": "Each image must be 10 MB or smaller"}, status=413)
         item_type = raw_types[index] if index < len(raw_types) else photo_type
         item_instruction = raw_instructions[index] if index < len(raw_instructions) else (default_instruction or PHOTO_REQUIREMENTS[item_type])
-        created.append(PatientConditionPhoto.objects.create(booking=booking, photo_type=item_type, instruction=item_instruction, image=uploaded, original_name=uploaded.name[:255], content_type=uploaded.content_type or "image/*", uploader_role="driver", uploader_name=uploader_name, uploader_email=uploader_email))
+        content_type = uploaded.content_type or "image/*"
+        encoded = base64.b64encode(uploaded.read()).decode("ascii")
+        created.append(PatientConditionPhoto.objects.create(
+            booking=booking,
+            photo_type=item_type,
+            instruction=item_instruction,
+            image="",
+            image_data=f"data:{content_type};base64,{encoded}",
+            original_name=uploaded.name[:255],
+            content_type=content_type,
+            uploader_role="driver",
+            uploader_name=uploader_name,
+            uploader_email=uploader_email,
+        ))
     return JsonResponse({"status": "uploaded", "photos": [_photo_to_dict(photo, request) for photo in created]}, status=201)

@@ -172,60 +172,42 @@ def ensure_hospital_beds(hospital):
             return 0
 
     with transaction.atomic():
-        existing = list(
-            HospitalBed.objects.select_for_update().filter(hospital_id=hospital.id)
-        )
-
-        # A previous seed created free beds as ``reserved`` to mirror the
-        # hospital summary. Those rows have no booking and are not genuinely
-        # reserved, so they made the first bed screen show false bookings and
-        # prevented later edits from matching the database. Only repair rows
-        # with no booking; assigned/occupied beds remain untouched.
-        stale_reserved = [
-            bed for bed in existing
-            if bed.status == "reserved" and bed.assigned_booking_id is None
-        ]
-        if stale_reserved:
-            now = timezone.now()
-            for bed in stale_reserved:
-                bed.status = "available"
-                bed.last_status_update = now
-                bed.save(update_fields=["status", "last_status_update", "updated_at"])
-
-        current_total = len(existing)
-        current_available = sum(b.status == "available" for b in existing)
-        current_icu = sum(b.bed_type == "icu" for b in existing)
-        current_icu_available = sum(
-            b.bed_type == "icu" and b.status == "available" for b in existing
-        )
-
+        beds = list(HospitalBed.objects.select_for_update().filter(hospital_id=hospital.id))
         configured_total = as_non_negative_int(hospital.total_beds)
         configured_icu = as_non_negative_int(hospital.icu_beds)
-        configured_available = as_non_negative_int(hospital.available_beds)
-        configured_icu_available = as_non_negative_int(hospital.available_icu_beds)
+        protected = [bed for bed in beds if bed.assigned_booking_id is not None]
+        protected_icu = sum(bed.bed_type == "icu" for bed in protected)
 
-        # Keep the old fallback of one visible bed for an unconfigured hospital,
-        # while never shrinking an inventory that already has real records.
-        target_total = max(1, configured_total, current_total)
-        target_icu = min(target_total, max(configured_icu, current_icu))
-        target_available = min(
-            target_total,
-            max(configured_available, 1 if configured_total == 0 else 0),
-        )
-        target_icu_available = min(target_icu, configured_icu_available)
+        # The hospital's edited total is authoritative. Never delete a bed
+        # linked to a booking, but remove excess free rows when the hospital
+        # reduces capacity; the old max(current_total, configured_total)
+        # logic was the reason edits reverted on the next fetch.
+        target_total = max(1, configured_total, len(protected))
+        target_icu = max(protected_icu, min(target_total, configured_icu))
 
-        total_to_add = max(0, target_total - current_total)
+        if len(beds) > target_total:
+            removable = [bed for bed in beds if bed.assigned_booking_id is None]
+            removable.sort(key=lambda bed: (bed.status != "available", -bed.id))
+            for bed in removable[: len(beds) - target_total]:
+                bed.delete()
+            beds = list(HospitalBed.objects.select_for_update().filter(hospital_id=hospital.id))
+
+        # If ICU capacity was reduced, reclassify only free ICU beds. Assigned
+        # ICU beds remain protected and force the minimum ICU capacity above.
+        free_icu = [bed for bed in beds if bed.bed_type == "icu" and bed.assigned_booking_id is None]
+        current_icu = sum(bed.bed_type == "icu" for bed in beds)
+        for bed in free_icu[: max(0, current_icu - target_icu)]:
+            bed.bed_type = "general"
+            bed.wing = "General Ward"
+            bed.last_status_update = timezone.now()
+            bed.save(update_fields=["bed_type", "wing", "last_status_update", "updated_at"])
+        beds = list(HospitalBed.objects.select_for_update().filter(hospital_id=hospital.id))
+
+        current_icu = sum(bed.bed_type == "icu" for bed in beds)
+        total_to_add = max(0, target_total - len(beds))
         icu_to_add = min(total_to_add, max(0, target_icu - current_icu))
         general_to_add = total_to_add - icu_to_add
-
-        # Newly created beds are immediately available. A bed becomes booked
-        # only through the explicit booking/assignment workflow.
-        icu_available_to_add = icu_to_add
-        general_available_to_add = general_to_add
-
-        used_numbers = set(
-            str(b.bed_number or "").strip().upper() for b in existing
-        )
+        used_numbers = {str(bed.bed_number or "").strip().upper() for bed in beds}
 
         def next_bed_number(prefix):
             index = 1
@@ -235,41 +217,28 @@ def ensure_hospital_beds(hospital):
             used_numbers.add(number)
             return number
 
-        created = []
-        for index in range(icu_to_add):
-            created.append(
-                HospitalBed.objects.create(
-                    hospital_id=hospital.id,
-                    bed_number=next_bed_number("ICU"),
-                    bed_type="icu",
-                    status="available" if index < icu_available_to_add else "reserved",
-                    wing="ICU",
-                )
+        # Newly created beds are always available. Reservation happens only
+        # through an explicit booking/assignment action or capacity reconcile.
+        for _ in range(icu_to_add):
+            HospitalBed.objects.create(
+                hospital_id=hospital.id,
+                bed_number=next_bed_number("ICU"),
+                bed_type="icu",
+                status="available",
+                wing="ICU",
             )
-        for index in range(general_to_add):
-            created.append(
-                HospitalBed.objects.create(
-                    hospital_id=hospital.id,
-                    bed_number=next_bed_number("G"),
-                    bed_type="general",
-                    status="available" if index < general_available_to_add else "reserved",
-                    wing="General Ward",
-                )
+        for _ in range(general_to_add):
+            HospitalBed.objects.create(
+                hospital_id=hospital.id,
+                bed_number=next_bed_number("G"),
+                bed_type="general",
+                status="available",
+                wing="General Ward",
             )
 
-        # The dashboard and bed endpoint must expose the same persisted counts.
-        # Sync when rows were added or when older summary counters are stale.
-        summary_is_stale = (
-            current_total != as_non_negative_int(hospital.total_beds)
-            or current_available != as_non_negative_int(hospital.available_beds)
-            or current_icu != as_non_negative_int(hospital.icu_beds)
-            or current_icu_available != as_non_negative_int(hospital.available_icu_beds)
-        )
-        if created or stale_reserved or summary_is_stale:
-            sync_hospital_bed_counts(hospital.id)
+        sync_hospital_bed_counts(hospital.id)
 
-    if created or stale_reserved or summary_is_stale:
-        hospital.refresh_from_db()
+    hospital.refresh_from_db()
     return list(HospitalBed.objects.filter(hospital_id=hospital.id))
 
 
@@ -839,12 +808,28 @@ def hospital_detail(request, id):
         data = json.loads(request.body)
         apply_hospital_payload(h, data)
         h.save()
+        if CAPACITY_FIELDS.intersection(data):
+            ensure_hospital_beds(h)
+            h.refresh_from_db()
+            for field in CAPACITY_FIELDS.intersection(data):
+                setattr(h, field, data[field])
+            h.save(update_fields=[*CAPACITY_FIELDS.intersection(data), "last_capacity_updated", "updated_at"])
+            reconcile_hospital_bed_availability(h)
+            h.refresh_from_db()
         return JsonResponse(hospital_to_dict(h))
 
     if request.method == "PATCH":
         data = json.loads(request.body)
         apply_hospital_payload(h, data)
         h.save()
+        if CAPACITY_FIELDS.intersection(data):
+            ensure_hospital_beds(h)
+            h.refresh_from_db()
+            for field in CAPACITY_FIELDS.intersection(data):
+                setattr(h, field, data[field])
+            h.save(update_fields=[*CAPACITY_FIELDS.intersection(data), "last_capacity_updated", "updated_at"])
+            reconcile_hospital_bed_availability(h)
+            h.refresh_from_db()
         return JsonResponse(hospital_to_dict(h))
 
     if request.method == "DELETE":
@@ -881,6 +866,9 @@ def hospital_resources(request, id):
                 setattr(hospital, field, value)
             hospital.save(update_fields=[*requested_capacity.keys(), "last_capacity_updated", "updated_at"])
             reconcile_hospital_bed_availability(hospital)
+            hospital.refresh_from_db()
+    else:
+        hospital.refresh_from_db()
     return JsonResponse(hospital_to_dict(hospital))
 
 

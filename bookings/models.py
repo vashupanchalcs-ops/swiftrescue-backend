@@ -149,7 +149,11 @@ class PatientConditionPhoto(models.Model):
     booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name="condition_photos")
     photo_type = models.CharField(max_length=30, choices=PHOTO_TYPES, default="patient")
     instruction = models.CharField(max_length=300, blank=True, default="")
-    image = models.FileField(upload_to="condition_photos/%Y/%m/%d/")
+    # Keep the actual image in PostgreSQL so Render's ephemeral filesystem
+    # cannot make a successful transfer disappear after a restart/deploy.
+    # ``image`` remains for backwards compatibility with older rows.
+    image = models.FileField(upload_to="condition_photos/%Y/%m/%d/", blank=True, default="")
+    image_data = models.TextField(blank=True, default="")
     original_name = models.CharField(max_length=255, blank=True, default="")
     content_type = models.CharField(max_length=100, blank=True, default="")
     uploader_role = models.CharField(max_length=30, default="driver")

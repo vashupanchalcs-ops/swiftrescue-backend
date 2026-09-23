@@ -176,20 +176,13 @@ CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60
 
-# ─── Cache (OTP storage) ──────────────────────────────────────────────────────
-# Priority: Render PostgreSQL -> Redis -> LocMem (local dev only).
-# PostgreSQL is already required by the deployed service and is a safer
-# cross-worker OTP store when the optional Redis service is unavailable.
-if database_url or os.getenv("POSTGRES_DB"):
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
-            "LOCATION": "django_cache",
-            "TIMEOUT": 300,
-            "OPTIONS": {"MAX_ENTRIES": 1000},
-        }
-    }
-elif REDIS_URL:
+# ─── Cache (transient OTP/notification helper only) ───────────────────────────
+# Application data is stored in PostgreSQL models. Do not use Django's
+# DatabaseCache here: it requires a separately-created ``django_cache`` table
+# and caused every cache read to emit 500s on Render when that optional table
+# was absent. Redis is preferred when configured; otherwise LocMem is a safe
+# fallback for this single web process and never blocks database-backed APIs.
+if REDIS_URL:
     CACHES = {
         "default": {
             # channels_redis is only a Channels layer; it is not a Django
