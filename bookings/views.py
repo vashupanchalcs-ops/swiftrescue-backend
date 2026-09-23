@@ -780,7 +780,12 @@ Driver: {booking.driver} ({booking.driver_contact or '-'})
 
     booking.save()
     for message in changed_messages:
-        _push_system_message(booking, message)
+        # The booking state is authoritative. A temporary chat-timeline
+        # failure must not turn a successful admin confirmation into HTTP 500.
+        try:
+            _push_system_message(booking, message)
+        except Exception as exc:
+            print("Booking system message error:", exc)
     return JsonResponse(booking_to_dict(booking))
 
 
