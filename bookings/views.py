@@ -16,6 +16,11 @@ from .models import Booking, BookingChatMessage, BookingChatThread, PatientCondi
 
 
 def _json_body(request):
+    # Multipart uploads expose request.POST/request.FILES through Django's
+    # parsed data stream. Reading request.body first raises
+    # RawPostDataException and breaks driver photo uploads.
+    if "application/json" not in str(getattr(request, "content_type", "") or "").lower():
+        return {}
     try:
         return json.loads(request.body or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
