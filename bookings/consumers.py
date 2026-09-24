@@ -63,7 +63,12 @@ class ConsultationConsumer(AsyncWebsocketConsumer):
         if self.role == "driver":
             # Accept if ambulance_id matches OR if driver email matches booking.driver_email
             ambulance_match = bool(self.ambulance_id and str(booking.ambulance_id) == str(self.ambulance_id))
-            email_match = bool(self.email and booking.driver_email and str(booking.driver_email).lower() == str(self.email).lower())
+            # Older Booking rows use the ambulance id/name as the driver
+            # identity and do not have a driver_email column.  Accessing the
+            # optional field directly made every otherwise-valid driver
+            # WebSocket handshake crash with HTTP 500.
+            booking_driver_email = getattr(booking, "driver_email", "") or ""
+            email_match = bool(self.email and booking_driver_email and str(booking_driver_email).lower() == str(self.email).lower())
             return ambulance_match or email_match
         # Staff: look up by staff_id + email
         staff = HospitalStaff.objects.filter(staff_id__iexact=self.staff_id, email__iexact=self.email, is_active=True).first()
