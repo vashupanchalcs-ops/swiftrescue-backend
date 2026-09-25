@@ -13,7 +13,7 @@ from django.views.decorators.csrf import csrf_exempt
 from ambulance.models import Ambulance
 from hospitals.models import Hospital, HospitalStaff
 
-from .models import Booking, BookingChatMessage, BookingChatThread, BookingStatusEvent, PatientConditionPhoto, VideoCallRequest, VoiceBookingCall
+from .models import Booking, BookingChatMessage, BookingChatThread, PatientConditionPhoto, VideoCallRequest, VoiceBookingCall
 from .assignment import AssignmentError, assign_booking
 from .realtime import publish_booking_update
 from .services import validate_status_transition
