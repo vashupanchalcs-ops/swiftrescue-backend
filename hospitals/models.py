@@ -58,6 +58,12 @@ class Hospital(models.Model):
     def __str__(self):
         return self.name
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["is_active", "status", "city"], name="hospital_active_status_idx"),
+            models.Index(fields=["is_active", "available_beds", "available_icu_beds"], name="hospital_capacity_idx"),
+        ]
+
 
 class HospitalStaff(models.Model):
     ROLE_CHOICES = [
@@ -92,6 +98,8 @@ class HospitalStaff(models.Model):
     shift               = models.CharField(max_length=20, choices=SHIFT_CHOICES, default="day")
     is_on_call          = models.BooleanField(default=False)
     is_active           = models.BooleanField(default=True)
+    # Allocation state is kept on the staff row so two concurrent bookings
+    # cannot select the same on-duty clinician.
     is_busy             = models.BooleanField(default=False)
     assigned_booking_id = models.IntegerField(null=True, blank=True)
     joined_on           = models.DateField(null=True, blank=True)
@@ -103,6 +111,10 @@ class HospitalStaff(models.Model):
         ordering = ["hospital__name", "role", "full_name"]
         verbose_name = "Hospital Staff"
         verbose_name_plural = "Hospital Staff"
+        indexes = [
+            models.Index(fields=["hospital", "is_active", "is_busy"], name="staff_availability_idx"),
+            models.Index(fields=["assigned_booking_id"], name="staff_booking_idx"),
+        ]
 
     def __str__(self):
         return f"{self.full_name} - {self.hospital.name}"

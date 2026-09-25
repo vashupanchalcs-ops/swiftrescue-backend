@@ -10,6 +10,8 @@ from decimal import Decimal, InvalidOperation
 from ambulance.models import Ambulance
 from hospitals.models import Hospital, HospitalStaff, HospitalBed
 from bookings.models import Booking
+from ambulance_tracker.pagination import parse_list_options
+from .cache import cache_get, cache_set, dashboard_key, invalidate_hospital_cache
 import json
 
 
@@ -561,6 +563,10 @@ def hospital_dashboard(request, id):
     except Hospital.DoesNotExist:
         return JsonResponse({"error": "Hospital not found"}, status=404)
 
+    cached = cache_get(dashboard_key(hospital.id))
+    if cached is not None:
+        return JsonResponse(cached)
+
     # Keep the dashboard counters and the bed console on the same persisted
     # inventory even when an older deployment created only partial bed rows.
     ensure_hospital_beds(hospital)
@@ -583,6 +589,8 @@ def hospital_dashboard(request, id):
     if hospital.name:
         hospital_filter |= Q(assigned_hospital_name__iexact=hospital.name) | Q(destination__iexact=hospital.name)
 
+    # New assignments use the immutable hospital id. The destination fallback keeps
+    # historical bookings visible after the production schema upgrade.
     bookings = (
         Booking.objects.filter(hospital_filter)
         .filter(
@@ -686,7 +694,7 @@ def hospital_dashboard(request, id):
         for booking in bookings
     ]
 
-    return JsonResponse({
+    payload = {
         "hospital": hospital_to_dict(hospital),
         "summary": {
             "active_cases": len(queue),
@@ -699,7 +707,9 @@ def hospital_dashboard(request, id):
         "staff": staff_data,
         "on_call_specialists": [member for member in staff_data if member["is_on_call"] and member["is_active"]],
         "redirect_suggestion": None,
-    })
+    }
+    cache_set(dashboard_key(hospital.id), payload)
+    return JsonResponse(payload)
 
 
 @csrf_exempt
@@ -780,14 +790,45 @@ def hospital_payment_detail(request, hospital_id, booking_id):
 def hospital_list(request):
 
     if request.method == "GET":
-        hospitals = Hospital.objects.all()
-        return JsonResponse([hospital_to_dict(h) for h in hospitals], safe=False)
+        params = request.GET
+        hospitals = Hospital.objects.all().order_by("name")
+        if str(params.get("active", "")).strip().lower() in {"1", "true", "yes"}:
+            hospitals = hospitals.filter(is_active=True)
+        status = str(params.get("status", "")).strip().lower()
+        if status:
+            hospitals = hospitals.filter(status=status)
+        city = str(params.get("city", "")).strip()
+        if city:
+            hospitals = hospitals.filter(city__icontains=city)
+        if str(params.get("emergency_services", "")).strip().lower() in {"1", "true", "yes"}:
+            hospitals = hospitals.filter(emergency_services=True)
+        search = str(params.get("search", "")).strip()
+        if search:
+            hospitals = hospitals.filter(Q(name__icontains=search) | Q(city__icontains=search) | Q(address__icontains=search))
+        page, page_size, paginate = parse_list_options(request, default_page_size=50, max_page_size=200)
+        if not paginate:
+            return JsonResponse([hospital_to_dict(h) for h in hospitals], safe=False)
+        total = hospitals.count()
+        start = (page - 1) * page_size
+        rows = list(hospitals[start : start + page_size])
+        return JsonResponse({
+            "results": [hospital_to_dict(h) for h in rows],
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": (total + page_size - 1) // page_size if total else 0,
+                "has_next": start + page_size < total,
+                "has_previous": page > 1,
+            },
+        })
 
     if request.method == "POST":
         data = json.loads(request.body)
         h = Hospital()
         apply_hospital_payload(h, data)
         h.save()
+        invalidate_hospital_cache(h.id)
         return JsonResponse(hospital_to_dict(h), status=201)
 
     return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -816,6 +857,7 @@ def hospital_detail(request, id):
             h.save(update_fields=[*CAPACITY_FIELDS.intersection(data), "last_capacity_updated", "updated_at"])
             reconcile_hospital_bed_availability(h)
             h.refresh_from_db()
+        invalidate_hospital_cache(h.id)
         return JsonResponse(hospital_to_dict(h))
 
     if request.method == "PATCH":
@@ -830,6 +872,7 @@ def hospital_detail(request, id):
             h.save(update_fields=[*CAPACITY_FIELDS.intersection(data), "last_capacity_updated", "updated_at"])
             reconcile_hospital_bed_availability(h)
             h.refresh_from_db()
+        invalidate_hospital_cache(h.id)
         return JsonResponse(hospital_to_dict(h))
 
     if request.method == "DELETE":
@@ -869,7 +912,142 @@ def hospital_resources(request, id):
             hospital.refresh_from_db()
     else:
         hospital.refresh_from_db()
+    invalidate_hospital_cache(hospital.id)
     return JsonResponse(hospital_to_dict(hospital))
+
+
+def _ensure_bed_inventory(hospital):
+    """Keep the legacy allocation endpoints on the reconciled inventory."""
+    return ensure_hospital_beds(hospital)
+
+
+@csrf_exempt
+def hospital_beds(request, hospital_id):
+    if request.method != "GET":
+        return JsonResponse({"error": "GET only"}, status=405)
+    with transaction.atomic():
+        hospital = Hospital.objects.select_for_update().filter(id=hospital_id, is_active=True).first()
+        if not hospital:
+            return JsonResponse({"error": "Hospital not found"}, status=404)
+        _ensure_bed_inventory(hospital)
+        beds = HospitalBed.objects.filter(hospital=hospital).order_by("bed_type", "bed_number")
+        page, page_size, paginate = parse_list_options(request, default_page_size=100, max_page_size=300)
+        if not paginate:
+            return JsonResponse([bed_to_dict(bed) for bed in beds], safe=False)
+        total = beds.count()
+        start = (page - 1) * page_size
+        rows = list(beds[start : start + page_size])
+        return JsonResponse({
+            "results": [bed_to_dict(bed) for bed in rows],
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": (total + page_size - 1) // page_size if total else 0,
+                "has_next": start + page_size < total,
+                "has_previous": page > 1,
+            },
+        })
+
+
+@csrf_exempt
+@transaction.atomic
+def hospital_bed_assign(request, hospital_id):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    try:
+        data = json.loads(request.body or b"{}")
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+    hospital = Hospital.objects.select_for_update().filter(id=hospital_id, is_active=True).first()
+    if not hospital:
+        return JsonResponse({"error": "Hospital not found"}, status=404)
+    try:
+        booking = Booking.objects.select_for_update().get(id=int(data.get("booking_id")), assigned_hospital_id=hospital.id)
+    except (Booking.DoesNotExist, TypeError, ValueError):
+        return JsonResponse({"error": "Booking is not assigned to this hospital"}, status=403)
+    _ensure_bed_inventory(hospital)
+    bed_type = "icu" if str(data.get("bed_type", "general")).lower() == "icu" else "general"
+    try:
+        bed = HospitalBed.objects.select_for_update().get(id=int(data.get("bed_id")), hospital=hospital)
+    except (HospitalBed.DoesNotExist, TypeError, ValueError):
+        return JsonResponse({"error": "Bed not found"}, status=404)
+    if bed.bed_type != bed_type:
+        return JsonResponse({"error": "Bed type does not match the requested allocation"}, status=409)
+    if bed.status != "available" and bed.assigned_booking_id != booking.id:
+        return JsonResponse({"error": "Bed is no longer available"}, status=409)
+    previous = HospitalBed.objects.select_for_update().filter(hospital=hospital, assigned_booking_id=booking.id).exclude(id=bed.id).first()
+    if previous:
+        previous.status, previous.assigned_booking_id, previous.patient_name, previous.assigned_staff_json = "available", None, "", "[]"
+        previous.save(update_fields=["status", "assigned_booking_id", "patient_name", "assigned_staff_json", "updated_at"])
+        if previous.bed_type == "icu":
+            hospital.available_icu_beds = min(int(hospital.icu_beds or 0), int(hospital.available_icu_beds or 0) + 1)
+        else:
+            hospital.available_beds = min(int(hospital.total_beds or 0), int(hospital.available_beds or 0) + 1)
+    if bed.status == "available":
+        if bed_type == "icu":
+            if int(hospital.available_icu_beds or 0) <= 0:
+                return JsonResponse({"error": "No ICU beds are available"}, status=409)
+            hospital.available_icu_beds -= 1
+        else:
+            if int(hospital.available_beds or 0) <= 0:
+                return JsonResponse({"error": "No general beds are available"}, status=409)
+            hospital.available_beds -= 1
+    bed.status = "reserved"
+    bed.assigned_booking_id = booking.id
+    bed.patient_name = booking.patient_name or booking.booked_by or "Emergency Intake"
+    bed.patient_age = booking.patient_age or ""
+    bed.patient_gender = booking.patient_gender or ""
+    bed.patient_phone = booking.patient_contact_number or booking.booked_by_email or ""
+    bed.medical_condition = booking.patient_condition or ("Critical Care Required" if bed_type == "icu" else "General Inpatient Care")
+    bed.vitals_summary = booking.vitals_summary or ""
+    bed.attending_doctor = booking.assigned_doctor_names or ""
+    bed.assigned_staff_json = booking.assigned_doctors_json or "[]"
+    bed.admission_time = timezone.now()
+    bed.save()
+    booking.assigned_bed_id, booking.assigned_bed_number, booking.assigned_bed_type = bed.id, bed.bed_number, bed.bed_type
+    booking.icu_required = bed.bed_type == "icu"
+    if booking.icu_required and not booking.icu_requested_at:
+        booking.icu_requested_at = timezone.now()
+    booking.save(update_fields=["assigned_bed_id", "assigned_bed_number", "assigned_bed_type", "icu_required", "icu_requested_at"])
+    hospital.last_capacity_updated = timezone.now()
+    hospital.save(update_fields=["available_beds", "available_icu_beds", "last_capacity_updated", "updated_at"])
+    invalidate_hospital_cache(hospital.id)
+    return JsonResponse({"status": "assigned", "bed": bed_to_dict(bed)})
+
+
+@csrf_exempt
+@transaction.atomic
+def hospital_bed_detail(request, bed_id):
+    if request.method not in {"GET", "PATCH"}:
+        return JsonResponse({"error": "GET or PATCH only"}, status=405)
+    bed = HospitalBed.objects.select_for_update().select_related("hospital").filter(id=bed_id).first()
+    if not bed:
+        return JsonResponse({"error": "Bed not found"}, status=404)
+    if request.method == "GET":
+        return JsonResponse(bed_to_dict(bed))
+    try:
+        data = json.loads(request.body or b"{}")
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+    next_status = str(data.get("status", bed.status)).lower()
+    if next_status not in {"available", "reserved", "occupied"}:
+        return JsonResponse({"error": "Invalid bed status"}, status=400)
+    if next_status == "available" and bed.status != "available":
+        if bed.bed_type == "icu":
+            bed.hospital.available_icu_beds = min(int(bed.hospital.icu_beds or 0), int(bed.hospital.available_icu_beds or 0) + 1)
+        else:
+            bed.hospital.available_beds = min(int(bed.hospital.total_beds or 0), int(bed.hospital.available_beds or 0) + 1)
+        bed.hospital.last_capacity_updated = timezone.now()
+        bed.hospital.save(update_fields=["available_beds", "available_icu_beds", "last_capacity_updated", "updated_at"])
+    for field in ("status", "assigned_booking_id", "patient_name", "patient_age", "patient_gender", "blood_group", "patient_phone", "emergency_contact", "medical_condition", "vitals_summary", "attending_doctor", "assigned_staff_json", "admission_time"):
+        if field in data:
+            setattr(bed, field, data[field])
+    if next_status == "available":
+        bed.assigned_booking_id = None
+    bed.save()
+    invalidate_hospital_cache(bed.hospital_id)
+    return JsonResponse(bed_to_dict(bed))
 
 
 @csrf_exempt
@@ -879,7 +1057,24 @@ def hospital_staff_list(request, hospital_id):
     except Hospital.DoesNotExist:
         return JsonResponse({"error": "Hospital not found"}, status=404)
     if request.method == "GET":
-        return JsonResponse([staff_to_dict(s) for s in hospital.staff.all()], safe=False)
+        staff = hospital.staff.all().order_by("role", "full_name")
+        page, page_size, paginate = parse_list_options(request, default_page_size=50, max_page_size=200)
+        if not paginate:
+            return JsonResponse([staff_to_dict(s) for s in staff], safe=False)
+        total = staff.count()
+        start = (page - 1) * page_size
+        rows = list(staff[start : start + page_size])
+        return JsonResponse({
+            "results": [staff_to_dict(s) for s in rows],
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": (total + page_size - 1) // page_size if total else 0,
+                "has_next": start + page_size < total,
+                "has_previous": page > 1,
+            },
+        })
     if request.method == "POST":
         data = json.loads(request.body or b"{}")
         full_name = str(data.get("full_name", "")).strip()
@@ -903,6 +1098,7 @@ def hospital_staff_list(request, hospital_id):
             staff_id=staff_id_value,
             registration_number=registration_number,
         )
+        invalidate_hospital_cache(hospital.id)
         return JsonResponse(staff_to_dict(staff), status=201)
     return JsonResponse({"error": "Method not allowed"}, status=405)
 
@@ -915,6 +1111,7 @@ def hospital_staff_detail(request, hospital_id, staff_id):
         return JsonResponse({"error": "Staff not found"}, status=404)
     if request.method == "DELETE":
         staff.delete()
+        invalidate_hospital_cache(hospital_id)
         return JsonResponse({"status": "deleted"})
     if request.method == "PATCH":
         data = json.loads(request.body or b"{}")
@@ -934,6 +1131,7 @@ def hospital_staff_detail(request, hospital_id, staff_id):
             if field in data and field not in {"staff_id", "registration_number"}:
                 setattr(staff, field, data[field])
         staff.save()
+        invalidate_hospital_cache(hospital_id)
         return JsonResponse(staff_to_dict(staff))
     return JsonResponse({"error": "Method not allowed"}, status=405)
 

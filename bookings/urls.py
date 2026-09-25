@@ -11,6 +11,7 @@ urlpatterns = [
     path("video-call/requests/", views.video_call_requests),
     path("video-call/requests/<int:request_id>/respond/", views.video_call_request_respond),
     path("driver-assigned/", views.driver_assigned_bookings),
+    path("<int:id>/auto-assign/", views.auto_assign_booking),
     path("<int:booking_id>/photos/", views.booking_photos),
     path("chat/threads/", views.chat_threads),
     path("chat/threads/<int:thread_id>/messages/", views.chat_messages),

@@ -4,6 +4,7 @@ import threading
 
 from django.core.mail import send_mail
 from django.db import transaction
+from django.db.models import Q
 from django.db.utils import OperationalError, ProgrammingError
 from django.http import JsonResponse
 from django.utils import timezone
@@ -12,7 +13,11 @@ from django.views.decorators.csrf import csrf_exempt
 from ambulance.models import Ambulance
 from hospitals.models import Hospital, HospitalStaff
 
-from .models import Booking, BookingChatMessage, BookingChatThread, PatientConditionPhoto, VideoCallRequest, VoiceBookingCall
+from .models import Booking, BookingChatMessage, BookingChatThread, BookingStatusEvent, PatientConditionPhoto, VideoCallRequest, VoiceBookingCall
+from .assignment import AssignmentError, assign_booking
+from .realtime import publish_booking_update
+from .services import validate_status_transition
+from ambulance_tracker.pagination import parse_list_options
 
 
 def _json_body(request):
@@ -254,6 +259,10 @@ def booking_to_dict(booking, *, ambulance=_LOOKUP_NOT_PROVIDED, chat_thread=_LOO
         "assigned_bed_type": getattr(booking, "assigned_bed_type", "general"),
         "icu_required": getattr(booking, "icu_required", False),
         "icu_requested_at": _iso(getattr(booking, "icu_requested_at", None)),
+        "assignment_distance_km": getattr(booking, "assignment_distance_km", None),
+        "assignment_eta_seconds": getattr(booking, "assignment_eta_seconds", None),
+        "assignment_route_provider": getattr(booking, "assignment_route_provider", ""),
+        "assignment_updated_at": _iso(getattr(booking, "assignment_updated_at", None)),
         "chat_thread_id": chat_thread.id if chat_thread else None,
     }
 
@@ -261,9 +270,40 @@ def booking_to_dict(booking, *, ambulance=_LOOKUP_NOT_PROVIDED, chat_thread=_LOO
 @csrf_exempt
 def booking_list(request):
     if request.method == "GET":
-        # Fast retrieval: latest 100 active cases for rapid JSON serialization & low payload
-        bookings = Booking.objects.all().order_by("-created_at")[:100]
-        booking_rows = list(bookings)
+        params = request.GET
+        bookings = Booking.objects.all().order_by("-created_at")
+        status = str(params.get("status", "")).strip().lower()
+        if status:
+            bookings = bookings.filter(status=status)
+        email = str(params.get("booked_by_email", params.get("email", ""))).strip()
+        if email:
+            bookings = bookings.filter(booked_by_email__iexact=email)
+        if params.get("ambulance_id"):
+            try:
+                bookings = bookings.filter(ambulance_id=int(params["ambulance_id"]))
+            except (TypeError, ValueError):
+                return JsonResponse({"error": "ambulance_id must be an integer"}, status=400)
+        if params.get("hospital_id"):
+            try:
+                bookings = bookings.filter(assigned_hospital_id=int(params["hospital_id"]))
+            except (TypeError, ValueError):
+                return JsonResponse({"error": "hospital_id must be an integer"}, status=400)
+        search = str(params.get("search", "")).strip()
+        if search:
+            bookings = bookings.filter(
+                Q(booked_by__icontains=search)
+                | Q(booked_by_email__icontains=search)
+                | Q(patient_name__icontains=search)
+                | Q(pickup_location__icontains=search)
+                | Q(destination__icontains=search)
+            )
+        page, page_size, paginate = parse_list_options(request, default_page_size=50, max_page_size=200)
+        total = bookings.count() if paginate else None
+        if paginate:
+            start = (page - 1) * page_size
+            booking_rows = list(bookings[start : start + page_size])
+        else:
+            booking_rows = list(bookings)
         ambulance_ids = {booking.ambulance_id for booking in booking_rows if booking.ambulance_id}
         booking_ids = {booking.id for booking in booking_rows}
         ambulance_map = {
@@ -274,14 +314,27 @@ def booking_list(request):
             thread.booking_id: thread
             for thread in BookingChatThread.objects.filter(booking_id__in=booking_ids).only("id", "booking_id")
         }
-        return JsonResponse([
+        rows = [
             booking_to_dict(
                 booking,
                 ambulance=ambulance_map.get(booking.ambulance_id),
                 chat_thread=thread_map.get(booking.id),
             )
             for booking in booking_rows
-        ], safe=False)
+        ]
+        if paginate:
+            return JsonResponse({
+                "results": rows,
+                "pagination": {
+                    "page": page,
+                    "page_size": page_size,
+                    "total": total,
+                    "total_pages": (total + page_size - 1) // page_size if total else 0,
+                    "has_next": page * page_size < total,
+                    "has_previous": page > 1,
+                },
+            })
+        return JsonResponse(rows, safe=False)
 
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -331,7 +384,51 @@ def booking_list(request):
     )
     _ensure_chat_thread(booking)
     _push_system_message(booking, f"Booking #{booking.id} created and queued for dispatch.")
-    return JsonResponse(booking_to_dict(booking), status=201)
+    response = booking_to_dict(booking)
+    if _to_bool(data.get("auto_assign")):
+        try:
+            assigned_booking, assignment = assign_booking(
+                booking,
+                preferred_ambulance_id=data.get("ambulance_id") if data.get("ambulance_id") else None,
+                preferred_hospital_id=data.get("hospital_id") if data.get("hospital_id") else None,
+                icu_required=_to_bool(data.get("icu_required")),
+                required_specialization=data.get("required_specialization", ""),
+            )
+            booking = assigned_booking
+            response = booking_to_dict(booking)
+            response["assignment"] = assignment
+            _push_system_message(booking, f"Booking #{booking.id} automatically assigned to {booking.ambulance_number} and {booking.assigned_hospital_name}.")
+            publish_booking_update(booking)
+        except (AssignmentError, ValueError, TypeError) as exc:
+            response["assignment_error"] = str(exc)
+    return JsonResponse(response, status=201)
+
+
+@csrf_exempt
+def auto_assign_booking(request, id):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    try:
+        booking = Booking.objects.get(id=id)
+    except Booking.DoesNotExist:
+        return JsonResponse({"error": "Booking not found"}, status=404)
+    data = _json_body(request) or {}
+    try:
+        booking, assignment = assign_booking(
+            booking,
+            preferred_ambulance_id=data.get("ambulance_id") or data.get("preferred_ambulance_id"),
+            preferred_hospital_id=data.get("hospital_id") or data.get("preferred_hospital_id"),
+            icu_required=_to_bool(data.get("icu_required", booking.icu_required)),
+            required_specialization=data.get("required_specialization", ""),
+        )
+    except (AssignmentError, ValueError, TypeError) as exc:
+        return JsonResponse({"error": str(exc)}, status=409)
+    _ensure_chat_thread(booking)
+    _push_system_message(booking, f"Booking #{booking.id} assigned to {booking.ambulance_number} and {booking.assigned_hospital_name}.")
+    publish_booking_update(booking)
+    payload = booking_to_dict(booking)
+    payload["assignment"] = assignment
+    return JsonResponse(payload)
 
 
 @csrf_exempt
@@ -793,6 +890,8 @@ Driver: {booking.driver} ({booking.driver_contact or '-'})
             _push_system_message(booking, message)
         except Exception as exc:
             print("Booking system message error:", exc)
+    if changed_messages:
+        publish_booking_update(booking)
     return JsonResponse(booking_to_dict(booking))
 
 
@@ -841,6 +940,7 @@ def booking_hospital_response(request, id):
             hospital.save(update_fields=["available_beds", "status", "last_capacity_updated", "updated_at"])
 
     _push_system_message(booking, f"Hospital response: {response.replace('_', ' ')}.")
+    publish_booking_update(booking)
     return JsonResponse(booking_to_dict(booking))
 
 

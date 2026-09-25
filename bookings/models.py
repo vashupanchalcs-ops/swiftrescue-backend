@@ -119,6 +119,10 @@ class Booking(models.Model):
     assigned_bed_type    = models.CharField(max_length=20, blank=True, default="general")
     icu_required         = models.BooleanField(default=False)
     icu_requested_at     = models.DateTimeField(null=True, blank=True)
+    assignment_distance_km = models.FloatField(null=True, blank=True)
+    assignment_eta_seconds = models.PositiveIntegerField(null=True, blank=True)
+    assignment_route_provider = models.CharField(max_length=40, blank=True, default="")
+    assignment_updated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_read = models.BooleanField(default=False)
     is_user_selected_hospital = models.BooleanField(default=False)
@@ -131,7 +135,6 @@ class Booking(models.Model):
             models.Index(fields=["ambulance_id"]),
             models.Index(fields=["booked_by_email"]),
         ]
-
     def __str__(self):
         return f"{self.ambulance_number} - {self.booked_by}"
 

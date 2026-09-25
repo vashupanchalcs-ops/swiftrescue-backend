@@ -262,6 +262,11 @@ if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
+    # The SPA and Render API are on different sites. Without SameSite=None,
+    # the OTP/staff session is silently omitted from cross-site fetches and
+    # booking-scoped WebSockets cannot authorize the user.
+    SESSION_COOKIE_SAMESITE = "None"
+    CSRF_COOKIE_SAMESITE = "None"
     SECURE_BROWSER_XSS_FILTER = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
 

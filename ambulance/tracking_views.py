@@ -5,8 +5,15 @@ Real-time GPS tracking, route suggestion, and driver ping APIs
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.utils import timezone
+from django.core.cache import cache
+from django.conf import settings
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from ambulance.models import Ambulance, DriverLocation, SuggestedRoute
 import json
+import math
+import hashlib
+import time
 import urllib.request
 import urllib.parse
 
@@ -86,35 +93,86 @@ def _route_dict(r):
 def driver_ping(request):
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
-    data   = json.loads(request.body)
-    email  = data.get("driver_email", "")
+    try:
+        data = json.loads(request.body or b"{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+    email  = str(data.get("driver_email", "")).strip().lower()
     amb_id = data.get("ambulance_id")
     lat    = data.get("latitude")
     lng    = data.get("longitude")
     speed  = data.get("speed", 0)
-    if not all([email, amb_id, lat, lng]):
+    if not all([email, amb_id, lat is not None, lng is not None]):
         return JsonResponse({"error": "driver_email, ambulance_id, latitude, longitude required"}, status=400)
-    try:
-        amb = Ambulance.objects.get(id=amb_id)
-    except Ambulance.DoesNotExist:
+    amb = _resolve_ambulance(amb_id)
+    if not amb:
         return JsonResponse({"error": "Ambulance not found"}, status=404)
+    try:
+        lat, lng = float(lat), float(lng)
+        speed = float(speed or 0)
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "latitude, longitude and speed must be numeric"}, status=400)
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180) or not math.isfinite(lat) or not math.isfinite(lng):
+        return JsonResponse({"error": "Invalid latitude/longitude"}, status=400)
+    if str(amb.driver_email or "").strip().lower() != email:
+        return JsonResponse({"error": "Driver is not assigned to this ambulance"}, status=403)
     amb.latitude  = lat
     amb.longitude = lng
     amb.speed     = str(speed)
     amb.save(update_fields=["latitude", "longitude", "speed", "last_updated"])
-    DriverLocation.objects.create(ambulance=amb, driver_email=email, latitude=lat, longitude=lng, speed=speed)
+    sample_key = f"driver-location-sampled:{amb.id}"
+    sampled = cache.add(sample_key, True, timeout=10)
+    if sampled:
+        DriverLocation.objects.create(ambulance=amb, driver_email=email, latitude=lat, longitude=lng, speed=speed)
     pending = SuggestedRoute.objects.filter(ambulance=amb, status__in=["pending", "accepted"]).order_by("-created_at").first()
-    return JsonResponse({"status": "ok", "timestamp": timezone.now().isoformat(), "pending_route": _route_dict(pending)})
+    timestamp = timezone.now().isoformat()
+    location_payload = {
+        "type": "location_update",
+        "ambulance_id": amb.id,
+        "ambulance_number": amb.ambulance_number,
+        "driver": amb.driver,
+        "status": amb.status,
+        "latitude": lat,
+        "longitude": lng,
+        "speed": speed,
+        "last_updated": timestamp,
+        "pending_route": _route_dict(pending),
+    }
+    try:
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"ambulance_{amb.id}",
+            {"type": "tracking.location", "payload": location_payload},
+        )
+        from bookings.models import Booking
+        active_booking_ids = Booking.objects.filter(
+            ambulance_id=amb.id, status__in=["pending", "confirmed"]
+        ).values_list("id", flat=True)
+        for booking_id in active_booking_ids:
+            async_to_sync(channel_layer.group_send)(
+                f"booking_{booking_id}",
+                {"type": "tracking.location", "payload": location_payload},
+            )
+    except Exception:
+        # GPS persistence must not fail just because Redis/Channels is down.
+        pass
+    return JsonResponse({"status": "ok", "sampled": sampled, "timestamp": timestamp, "pending_route": _route_dict(pending)})
 
 
 @csrf_exempt
 def all_live_locations(request):
     if request.method != "GET":
         return JsonResponse({"error": "GET only"}, status=405)
-    ambulances = Ambulance.objects.exclude(latitude=None).exclude(longitude=None)
+    ambulances = list(Ambulance.objects.exclude(latitude=None).exclude(longitude=None))
+    routes_by_ambulance = {}
+    route_rows = SuggestedRoute.objects.filter(
+        ambulance_id__in=[a.id for a in ambulances], status__in=["pending", "accepted"]
+    ).order_by("-created_at")
+    for route in route_rows:
+        routes_by_ambulance.setdefault(route.ambulance_id, route)
     result = []
     for a in ambulances:
-        active = SuggestedRoute.objects.filter(ambulance=a, status__in=["pending", "accepted"]).order_by("-created_at").first()
+        active = routes_by_ambulance.get(a.id)
         result.append({
             "ambulance_id":     a.id,
             "ambulance_number": a.ambulance_number,
@@ -211,13 +269,37 @@ def driver_active_route(request):
 def get_traffic_route(request):
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
-    data    = json.loads(request.body)
-    api_key = data.get("api_key", "")
+    try:
+        data = json.loads(request.body or b"{}")
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    client = forwarded.split(",", 1)[0].strip() or request.META.get("REMOTE_ADDR", "unknown")
+    rate_key = f"traffic-route-rate:{client}:{int(time.time() // 60)}"
+    try:
+        allowed = cache.add(rate_key, 1, timeout=65) or int(cache.incr(rate_key)) <= 30
+    except Exception:
+        allowed = True
+    if not allowed:
+        return JsonResponse({"error": "Traffic route rate limit exceeded; retry shortly"}, status=429)
+    api_key = getattr(settings, "GOOGLE_MAPS_API_KEY", "").strip()
     if not api_key:
-        return JsonResponse({"error": "api_key required"}, status=400)
+        return JsonResponse({"error": "Traffic routing is not configured on the server"}, status=503)
+    required = ("origin_lat", "origin_lng", "pickup_lat", "pickup_lng", "dest_lat", "dest_lng")
+    if any(key not in data for key in required):
+        return JsonResponse({"error": "origin, pickup and destination coordinates are required"}, status=400)
     origin      = f"{data['origin_lat']},{data['origin_lng']}"
     pickup      = f"{data['pickup_lat']},{data['pickup_lng']}"
     destination = f"{data['dest_lat']},{data['dest_lng']}"
+    cache_key = "traffic-route:" + hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8")).hexdigest()
+    try:
+        cached = cache.get(cache_key)
+    except Exception:
+        cached = None
+    if cached:
+        cached = dict(cached)
+        cached["cached"] = True
+        return JsonResponse(cached)
     params = {
         "origin":         origin,
         "destination":    destination,
@@ -247,8 +329,15 @@ def get_traffic_route(request):
             "duration":     f"{total_dur // 60} min",
             "duration_sec": total_dur,
         })
+    if not routes:
+        return JsonResponse({"error": "Traffic provider returned no routes"}, status=502)
     routes.sort(key=lambda x: x["duration_sec"])
-    return JsonResponse({"routes": routes, "best": routes[0], "total": len(routes)})
+    payload = {"routes": routes, "best": routes[0], "total": len(routes), "cached": False}
+    try:
+        cache.set(cache_key, payload, timeout=45)
+    except Exception:
+        pass
+    return JsonResponse(payload)
 
 
 @csrf_exempt

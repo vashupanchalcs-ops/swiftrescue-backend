@@ -32,11 +32,11 @@ class Ambulance(models.Model):
         indexes = [
             models.Index(fields=["status"]),
             models.Index(fields=["driver_email"]),
+            models.Index(fields=["status", "latitude", "longitude"], name="ambulance_dispatch_geo_idx"),
         ]
 
     def __str__(self):
         return self.ambulance_number
-
 
 class DriverLocation(models.Model):
     ambulance    = models.ForeignKey(Ambulance, on_delete=models.CASCADE, related_name="locations")
@@ -51,6 +51,10 @@ class DriverLocation(models.Model):
 
     class Meta:
         ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["ambulance", "-timestamp"], name="driver_loc_amb_time_idx"),
+            models.Index(fields=["driver_email", "-timestamp"], name="driver_loc_email_time_idx"),
+        ]
 
 
 class SuggestedRoute(models.Model):

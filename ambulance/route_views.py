@@ -1,11 +1,38 @@
 import json
 import urllib.request
 import urllib.parse
+import hashlib
+import time
+from datetime import datetime, timezone
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
+from django.core.cache import cache
 
 GOOGLE_API_KEY = getattr(settings, "GOOGLE_MAPS_API_KEY", "").strip()
+
+
+def _allow_route_request(request, limit=30):
+    """Bound expensive route calls per client while allowing cache hits."""
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    client = forwarded.split(",", 1)[0].strip() or request.META.get("REMOTE_ADDR", "unknown")
+    bucket = int(time.time() // 60)
+    key = f"route-rate:{client}:{bucket}"
+    try:
+        if cache.add(key, 1, timeout=65):
+            return True
+        return int(cache.incr(key)) <= limit
+    except Exception:
+        return True
+
+
+def _annotate_route(route_data):
+    provider = str(route_data.get("provider", "fallback")).lower()
+    traffic_available = provider in {"tomtom", "google"}
+    route_data["traffic_available"] = traffic_available
+    route_data["trafficAvailable"] = traffic_available
+    route_data["last_calculated_at"] = datetime.now(timezone.utc).isoformat()
+    return route_data
 
 
 def _is_india_coord(lat, lng):
@@ -41,6 +68,8 @@ def get_route(request):
         data = json.loads(request.body)
     except (KeyError, json.JSONDecodeError) as e:
         return JsonResponse({"error": f"Invalid JSON: {e}"}, status=400)
+    if not _allow_route_request(request):
+        return JsonResponse({"error": "Route request rate limit exceeded; retry shortly"}, status=429)
 
     origin_lat = data.get("origin_lat") or data.get("ambulance_lat") or data.get("pickup_lat")
     origin_lng = data.get("origin_lng") or data.get("ambulance_lng") or data.get("pickup_lng")

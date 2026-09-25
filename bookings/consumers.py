@@ -4,6 +4,7 @@ from urllib.parse import parse_qs
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
+from ambulance.models import Ambulance
 from bookings.models import Booking
 from hospitals.models import HospitalStaff
 
@@ -151,3 +152,78 @@ class BookingChatConsumer(AsyncWebsocketConsumer):
             "type": "presence",
             "presence": event.get("presence", {})
         }))
+class TrackingConsumer(AsyncWebsocketConsumer):
+    """Authenticated ambulance location stream with booking scoping."""
+
+    async def connect(self):
+        try:
+            self.ambulance_id = int(self.scope["url_route"]["kwargs"]["ambulance_id"])
+        except (KeyError, TypeError, ValueError):
+            await self.close(code=4400)
+            return
+        query = parse_qs(self.scope.get("query_string", b"").decode("utf-8"))
+        self.role = (query.get("role", [""])[0] or "").lower()
+        self.email = (query.get("email", [""])[0] or "").strip().lower()
+        self.booking_id = query.get("booking_id", [""])[0]
+        try:
+            self.booking_id = int(self.booking_id) if self.booking_id else None
+        except (TypeError, ValueError):
+            self.booking_id = None
+
+        if not await self._is_authorized():
+            await self.close(code=4403)
+            return
+
+        self.groups = {f"ambulance_{self.ambulance_id}"}
+        if self.booking_id:
+            self.groups.add(f"booking_{self.booking_id}")
+        for group in self.groups:
+            await self.channel_layer.group_add(group, self.channel_name)
+        await self.accept()
+
+    async def disconnect(self, code):
+        for group in getattr(self, "groups", set()):
+            await self.channel_layer.group_discard(group, self.channel_name)
+
+    async def receive(self, text_data=None, bytes_data=None):
+        # Location is written only through the authenticated HTTP driver-ping
+        # endpoint; clients cannot inject location events into the group.
+        return
+
+    async def tracking_location(self, event):
+        await self.send(text_data=json.dumps(event.get("payload") or {}))
+
+    async def tracking_booking(self, event):
+        await self.send(text_data=json.dumps(event.get("payload") or {}))
+
+    @database_sync_to_async
+    def _is_authorized(self):
+        ambulance = Ambulance.objects.filter(id=self.ambulance_id).first()
+        if not ambulance:
+            return False
+        user = self.scope.get("user")
+        if getattr(user, "is_authenticated", False) and getattr(user, "is_staff", False):
+            return True
+
+        session = self.scope.get("session") or {}
+        verified_email = str(session.get("verified_email", "")).strip().lower()
+        staff_auth = session.get("staff_auth") or {}
+        staff_email = str(staff_auth.get("email", "")).strip().lower()
+        if self.role == "driver":
+            return bool(self.email and str(ambulance.driver_email or "").lower() == self.email)
+        if self.role == "user":
+            booking = Booking.objects.filter(id=self.booking_id, ambulance_id=self.ambulance_id).first() if self.booking_id else None
+            return bool(booking and verified_email and verified_email == str(booking.booked_by_email or "").lower())
+        if self.role in {"staff", "hospital"}:
+            if not staff_email:
+                return False
+            staff = HospitalStaff.objects.filter(email__iexact=staff_email, is_active=True).first()
+            if not staff:
+                return False
+            if not self.booking_id:
+                return False
+            booking = Booking.objects.filter(id=self.booking_id, ambulance_id=self.ambulance_id).first()
+            if not booking or booking.assigned_hospital_id != staff.hospital_id:
+                return False
+            return True
+        return False

@@ -6,7 +6,9 @@ from django.core.cache import cache
 from django.core.cache.backends.locmem import LocMemCache
 from django.core import signing
 from django.utils import timezone
+from django.db.models import Q
 from ambulance.models import Ambulance, DriverLocation, SuggestedRoute
+from ambulance_tracker.pagination import parse_list_options
 import json
 import random
 import logging
@@ -371,8 +373,43 @@ def ambulance_to_dict(a):
 @csrf_exempt
 def ambulance_list(request):
     if request.method == "GET":
+        params = request.GET
         ambulances = Ambulance.objects.all()
-        return JsonResponse([ambulance_to_dict(a) for a in ambulances], safe=False)
+        status = str(params.get("status", "")).strip().lower()
+        if status:
+            ambulances = ambulances.filter(status=status)
+        search = str(params.get("search", "")).strip()
+        if search:
+            ambulances = ambulances.filter(
+                Q(ambulance_number__icontains=search)
+                | Q(driver__icontains=search)
+                | Q(driver_email__icontains=search)
+                | Q(registration_number__icontains=search)
+            )
+        if str(params.get("has_location", "")).strip().lower() in {"1", "true", "yes"}:
+            ambulances = ambulances.exclude(latitude__isnull=True).exclude(longitude__isnull=True)
+        ordering = str(params.get("ordering", "")).strip()
+        if ordering in {"last_updated", "-last_updated", "ambulance_number", "-ambulance_number", "status", "-status"}:
+            ambulances = ambulances.order_by(ordering)
+        else:
+            ambulances = ambulances.order_by("id")
+        page, page_size, paginate = parse_list_options(request, default_page_size=50, max_page_size=200)
+        if not paginate:
+            return JsonResponse([ambulance_to_dict(a) for a in ambulances], safe=False)
+        total = ambulances.count()
+        start = (page - 1) * page_size
+        rows = list(ambulances[start : start + page_size])
+        return JsonResponse({
+            "results": [ambulance_to_dict(a) for a in rows],
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": (total + page_size - 1) // page_size if total else 0,
+                "has_next": start + page_size < total,
+                "has_previous": page > 1,
+            },
+        })
 
     if request.method == "POST":
         data = json.loads(request.body)
