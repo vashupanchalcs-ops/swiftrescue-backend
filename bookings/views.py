@@ -11,6 +11,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from ambulance.models import Ambulance
+from ambulance.tracking_service import EVENT_TYPES, broadcast
 from hospitals.models import Hospital, HospitalStaff
 
 from .models import Booking, BookingChatMessage, BookingChatThread, PatientConditionPhoto, VideoCallRequest, VoiceBookingCall
@@ -350,7 +351,8 @@ def booking_list(request):
     user_hospital = Hospital.objects.filter(id=user_hospital_id, is_active=True).first() if user_hospital_id > 0 else None
     is_user_selected = _to_bool(data.get("is_user_selected_hospital")) or (user_hospital is not None)
 
-    booking = Booking.objects.create(
+    try:
+        booking = Booking.objects.create(
         ambulance_id=ambulance_id,
         ambulance_number=data.get("ambulance_number") or (ambulance.ambulance_number if ambulance else ""),
         driver=data.get("driver") or (ambulance.driver if ambulance else ""),
@@ -382,6 +384,9 @@ def booking_list(request):
         hospital_alert_sent=_to_bool(data.get("send_hospital_alert"), False),
         hospital_alert_sent_at=timezone.now() if _to_bool(data.get("send_hospital_alert"), False) else None,
     )
+    except (OperationalError, ProgrammingError):
+        return JsonResponse({"error": "Database migrations are pending. Run: python manage.py migrate"}, status=503)
+
     _ensure_chat_thread(booking)
     _push_system_message(booking, f"Booking #{booking.id} created and queued for dispatch.")
     response = booking_to_dict(booking)
@@ -431,6 +436,7 @@ def auto_assign_booking(request, id):
     return JsonResponse(payload)
 
 
+
 @csrf_exempt
 @transaction.atomic
 def booking_detail(request, id):
@@ -441,6 +447,12 @@ def booking_detail(request, id):
         booking = Booking.objects.select_for_update().get(id=id)
     except Booking.DoesNotExist:
         return JsonResponse({"error": "Not found"}, status=404)
+
+    previous_ambulance_id = booking.ambulance_id
+    previous_hospital_id = booking.assigned_hospital_id
+    previous_patient_reached = booking.patient_reached
+    previous_status = booking.status
+    previous_transfer_status = getattr(booking, "transfer_status", "")
 
     if request.method == "GET":
         return JsonResponse(booking_to_dict(booking))
@@ -883,6 +895,29 @@ Driver: {booking.driver} ({booking.driver_contact or '-'})
         changed_messages.append("Medical insurance details submitted to hospital.")
 
     booking.save()
+    # Keep all map clients in sync with the existing booking workflow. Route
+    # recalculation is intentionally event-driven here; GPS pings never call
+    # Google Routes.
+    try:
+        if previous_patient_reached != booking.patient_reached and booking.patient_reached:
+            broadcast(id, EVENT_TYPES["pickup"], {"phase": "to_hospital", "booking_id": id})
+        if previous_hospital_id != booking.assigned_hospital_id:
+            broadcast(id, EVENT_TYPES["hospital"], {"hospital_id": booking.assigned_hospital_id, "hospital_name": booking.assigned_hospital_name})
+        if previous_ambulance_id != booking.ambulance_id or (previous_transfer_status != getattr(booking, "transfer_status", "") and getattr(booking, "transfer_status", "") == "approved"):
+            broadcast(id, EVENT_TYPES["transfer"], {"ambulance_id": booking.ambulance_id, "ambulance_number": booking.ambulance_number, "driver": booking.driver})
+        if previous_status != booking.status:
+            broadcast(id, EVENT_TYPES["status"], {"status": booking.status})
+        if (previous_patient_reached != booking.patient_reached or previous_hospital_id != booking.assigned_hospital_id or previous_ambulance_id != booking.ambulance_id) and booking.status not in {"completed", "cancelled"}:
+            from ambulance.route_service import calculate_booking_route
+            route = calculate_booking_route(booking, force=True, reason="booking_state_changed")
+            from ambulance.tracking_service import route_dict
+            normalized = route_dict(route)
+            broadcast(id, EVENT_TYPES["route"], normalized)
+            broadcast(id, EVENT_TYPES["eta"], {"distance_m": normalized["distance_m"], "duration_s": normalized["duration_s"], "traffic_duration_s": normalized["traffic_duration_s"], "traffic_available": normalized["traffic_available"]})
+    except Exception as exc:
+        # A missing API key or incomplete coordinates must not break an
+        # otherwise successful booking assignment/status update.
+        print("Tracking event/route update skipped:", exc)
     for message in changed_messages:
         # The booking state is authoritative. A temporary chat-timeline
         # failure must not turn a successful admin confirmation into HTTP 500.

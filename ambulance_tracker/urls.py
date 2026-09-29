@@ -15,6 +15,7 @@ from ambulance.tracking_views import (
     active_route_by_booking,
     update_battery,
 )
+from ambulance.tracking_api import tracking_snapshot, tracking_route
 
 from django.http import JsonResponse
 from django.db import connection
@@ -75,6 +76,8 @@ urlpatterns = [
     path("api/admin/suggest-route/",     suggest_route),
     path("api/admin/traffic-route/",     get_traffic_route),
     path("api/route/active/<int:booking_id>/", active_route_by_booking),
+    path("api/bookings/<int:booking_id>/tracking/", tracking_snapshot),
+    path("api/bookings/<int:booking_id>/tracking/route/", tracking_route),
 
     # ── HOSPITALS & BOOKINGS ─────────────────────────
     path("api/hospitals/", include("hospitals.urls")),

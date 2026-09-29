@@ -7,6 +7,7 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from ambulance.models import Ambulance
 from bookings.models import Booking
 from hospitals.models import HospitalStaff
+from ambulance.tracking_service import is_authorized, snapshot_for_booking
 
 
 class ConsultationConsumer(AsyncWebsocketConsumer):
@@ -91,6 +92,45 @@ class ConsultationConsumer(AsyncWebsocketConsumer):
             )
             for member in team
         )
+
+
+class BookingTrackingConsumer(AsyncWebsocketConsumer):
+    """Authenticated, booking-scoped live tracking stream for Flutter Web."""
+
+    async def connect(self):
+        self.booking_id = int(self.scope["url_route"]["kwargs"].get("booking_id", 0))
+        query = parse_qs(self.scope.get("query_string", b"").decode("utf-8"))
+        self.role = (query.get("role", [""])[0] or "").lower()
+        self.email = query.get("email", [""])[0]
+        self.ambulance_id = query.get("ambulance_id", [""])[0]
+        self.hospital_id = query.get("hospital_id", [""])[0]
+        self.staff_id = query.get("staff_id", [""])[0]
+        if not await self.authorized():
+            await self.close(code=4403)
+            return
+        self.group_name = f"booking_tracking_{self.booking_id}"
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
+        snapshot = await database_sync_to_async(snapshot_for_booking)(self.booking_id)
+        if snapshot:
+            await self.send(text_data=json.dumps({"type": "TRACKING_SNAPSHOT", "booking_id": self.booking_id, "payload": snapshot}))
+
+    async def disconnect(self, code):
+        if getattr(self, "group_name", None):
+            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+
+    async def receive(self, text_data=None, bytes_data=None):
+        # Clients are read-only. GPS ingestion is server-side through REST so
+        # a browser cannot impersonate an ambulance by sending an event.
+        return
+
+    async def tracking_event(self, event):
+        await self.send(text_data=json.dumps(event.get("event") or {}))
+
+    @database_sync_to_async
+    def authorized(self):
+        booking = Booking.objects.filter(id=self.booking_id).first()
+        return is_authorized(booking, self.role, self.email, self.ambulance_id, self.hospital_id, self.staff_id)
 
 
 class BookingChatConsumer(AsyncWebsocketConsumer):

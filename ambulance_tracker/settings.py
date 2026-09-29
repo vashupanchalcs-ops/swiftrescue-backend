@@ -272,6 +272,9 @@ if not DEBUG:
 
 # ─── Google Maps (Directions/Geocode) ───────────────────────────────────────
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
+GOOGLE_ROUTES_API_KEY = os.getenv("GOOGLE_ROUTES_API_KEY", "").strip()
+TRACKING_LOCATION_CHECKPOINT_SECONDS = int(os.getenv("TRACKING_LOCATION_CHECKPOINT_SECONDS", "5"))
+TRACKING_LOCATION_MAX_JUMP_METERS = float(os.getenv("TRACKING_LOCATION_MAX_JUMP_METERS", "2000"))
 
 # ─── Voice/SMS Intake Integrations ───────────────────────────────────────────
 DIRECT_CALL_HOTLINE_NUMBER = os.getenv("DIRECT_CALL_HOTLINE_NUMBER", "8882128534").strip()

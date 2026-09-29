@@ -10,6 +10,7 @@ from django.conf import settings
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from ambulance.models import Ambulance, DriverLocation, SuggestedRoute
+from ambulance.tracking_service import checkpoint_location
 import json
 import math
 import hashlib
@@ -101,7 +102,8 @@ def driver_ping(request):
     amb_id = data.get("ambulance_id")
     lat    = data.get("latitude")
     lng    = data.get("longitude")
-    speed  = data.get("speed", 0)
+    heading = data.get("heading")
+    booking_id = data.get("booking_id")
     if not all([email, amb_id, lat is not None, lng is not None]):
         return JsonResponse({"error": "driver_email, ambulance_id, latitude, longitude required"}, status=400)
     amb = _resolve_ambulance(amb_id)
@@ -148,15 +150,16 @@ def driver_ping(request):
         active_booking_ids = Booking.objects.filter(
             ambulance_id=amb.id, status__in=["pending", "confirmed"]
         ).values_list("id", flat=True)
-        for booking_id in active_booking_ids:
+        for b_id in active_booking_ids:
             async_to_sync(channel_layer.group_send)(
-                f"booking_{booking_id}",
+                f"booking_{b_id}",
                 {"type": "tracking.location", "payload": location_payload},
             )
     except Exception:
         # GPS persistence must not fail just because Redis/Channels is down.
         pass
     return JsonResponse({"status": "ok", "sampled": sampled, "timestamp": timestamp, "pending_route": _route_dict(pending)})
+
 
 
 @csrf_exempt

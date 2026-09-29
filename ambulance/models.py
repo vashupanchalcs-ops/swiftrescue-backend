@@ -1,4 +1,5 @@
 from django.db import models
+import uuid
 
 
 class Ambulance(models.Model):
@@ -137,3 +138,54 @@ class UserProfile(models.Model):
 
     def __str__(self):
         return f"{self.email} ({self.role})"
+
+
+class BookingTrackingState(models.Model):
+    """Small, durable snapshot used to bootstrap a booking tracking client.
+
+    GPS updates are broadcast through Channels immediately.  This row is only
+    checkpointed at a controlled cadence, so the live path does not turn every
+    device tick into a PostgreSQL write.
+    """
+    PHASE_CHOICES = [("to_patient", "To patient"), ("to_hospital", "To hospital"), ("completed", "Completed")]
+    booking_id = models.IntegerField(unique=True, db_index=True)
+    phase = models.CharField(max_length=20, choices=PHASE_CHOICES, default="to_patient")
+    patient_lat = models.FloatField(null=True, blank=True)
+    patient_lng = models.FloatField(null=True, blank=True)
+    hospital_lat = models.FloatField(null=True, blank=True)
+    hospital_lng = models.FloatField(null=True, blank=True)
+    ambulance_id = models.IntegerField(null=True, blank=True)
+    ambulance_lat = models.FloatField(null=True, blank=True)
+    ambulance_lng = models.FloatField(null=True, blank=True)
+    ambulance_heading = models.FloatField(null=True, blank=True)
+    last_location_at = models.DateTimeField(null=True, blank=True)
+    last_checkpoint_at = models.DateTimeField(null=True, blank=True)
+    sequence = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["phase", "updated_at"])]
+
+
+class TrackingRoute(models.Model):
+    """Versioned, normalized route returned to Flutter clients."""
+    PHASE_CHOICES = BookingTrackingState.PHASE_CHOICES
+    route_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    booking_id = models.IntegerField(db_index=True)
+    version = models.PositiveIntegerField(default=1)
+    phase = models.CharField(max_length=20, choices=PHASE_CHOICES)
+    origin_lat = models.FloatField()
+    origin_lng = models.FloatField()
+    destination_lat = models.FloatField()
+    destination_lng = models.FloatField()
+    distance_m = models.PositiveIntegerField(default=0)
+    duration_s = models.PositiveIntegerField(default=0)
+    traffic_duration_s = models.PositiveIntegerField(null=True, blank=True)
+    encoded_polyline = models.TextField(blank=True)
+    provider = models.CharField(max_length=40, default="google_routes")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version", "-created_at"]
+        indexes = [models.Index(fields=["booking_id", "phase", "version"])]
