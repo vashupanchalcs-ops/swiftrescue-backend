@@ -560,7 +560,7 @@ def booking_detail(request, id):
         booking.status = new_status
         if new_status in {"completed", "cancelled"}:
             from hospitals.models import HospitalStaff
-            HospitalStaff.objects.filter(assigned_booking_id=booking.id).update(is_active=True, is_busy=False, assigned_booking_id=None)
+            HospitalStaff.objects.filter(assigned_booking_id=booking.id).update(is_busy=False, assigned_booking_id=None)
             Ambulance.objects.filter(id=booking.ambulance_id).update(status="available")
             if booking.hospital_response == "ready" and booking.assigned_hospital_id:
                 h = Hospital.objects.filter(id=booking.assigned_hospital_id).first()
@@ -577,7 +577,7 @@ def booking_detail(request, id):
 
     if _to_bool(data.get("driver_task_complete")):
         from hospitals.models import HospitalStaff
-        HospitalStaff.objects.filter(assigned_booking_id=booking.id).update(is_active=True, is_busy=False, assigned_booking_id=None)
+        HospitalStaff.objects.filter(assigned_booking_id=booking.id).update(is_busy=False, assigned_booking_id=None)
         booking.driver_task_completed = True
         booking.driver_task_completed_at = timezone.now()
         booking.status = "completed"
@@ -608,14 +608,12 @@ def booking_detail(request, id):
             doctors_input = [doctors_input] if doctors_input else []
         
         doctors_input = doctors_input[:3]
-        HospitalStaff.objects.filter(assigned_booking_id=booking.id).update(is_active=True, is_busy=False, assigned_booking_id=None)
-        
-        doctor_ids = []
-        names = []
-        specs = []
-        contacts = []
-        json_list = []
-        
+        requested_staff = []
+        seen_staff_ids = set()
+        target_hospital_id = _to_int(data.get("hospital_id"), booking.assigned_hospital_id or 0)
+
+        # Validate every requested member before changing the current team.
+        # A staff account cannot be allocated to two active bookings.
         for doc in doctors_input:
             if isinstance(doc, dict):
                 d_id = _to_int(doc.get("id"))
@@ -625,28 +623,67 @@ def booking_detail(request, id):
             else:
                 d_id = _to_int(doc)
                 d_name, d_spec, d_phone = "", "", ""
-                
-            staff_obj = HospitalStaff.objects.filter(id=d_id).first() if d_id > 0 else None
-            if staff_obj:
-                d_name = d_name or staff_obj.full_name
-                d_spec = d_spec or staff_obj.specialization
-                d_phone = d_phone or staff_obj.contact_number
-                staff_obj.is_active = True
-                staff_obj.is_busy = True
-                staff_obj.assigned_booking_id = booking.id
-                staff_obj.save()
-            
-            if d_name:
-                doctor_ids.append(d_id)
-                names.append(d_name)
-                specs.append(d_spec)
-                contacts.append(d_phone)
-                json_list.append({
-                    "id": d_id,
-                    "full_name": d_name,
-                    "specialization": d_spec,
-                    "contact_number": d_phone,
-                })
+
+            staff_query = HospitalStaff.objects.select_related("hospital")
+            if d_id > 0:
+                staff_obj = staff_query.filter(id=d_id).first()
+            else:
+                staff_obj = staff_query.filter(
+                    full_name__iexact=d_name,
+                    hospital_id=target_hospital_id,
+                ).first() if d_name and target_hospital_id else None
+            if not staff_obj:
+                return JsonResponse({"error": f"Staff member '{d_name or d_id}' was not found."}, status=400)
+            if target_hospital_id and staff_obj.hospital_id != target_hospital_id:
+                return JsonResponse({"error": "Staff member belongs to a different hospital."}, status=400)
+            if not staff_obj.is_active:
+                return JsonResponse({"error": f"{staff_obj.full_name} is inactive and cannot be allocated."}, status=409)
+            if staff_obj.id in seen_staff_ids:
+                continue
+
+            assigned_id = staff_obj.assigned_booking_id
+            if assigned_id and assigned_id != booking.id:
+                other_booking = Booking.objects.filter(id=assigned_id).only(
+                    "id", "status", "driver_task_completed"
+                ).first()
+                if other_booking and other_booking.status not in {"completed", "cancelled"} and not other_booking.driver_task_completed:
+                    return JsonResponse({
+                        "error": f"{staff_obj.full_name} is already allocated to Booking #{other_booking.id}.",
+                        "staff_id": staff_obj.id,
+                        "assigned_booking_id": other_booking.id,
+                    }, status=409)
+
+            seen_staff_ids.add(staff_obj.id)
+            requested_staff.append((staff_obj, d_spec, d_phone))
+
+        requested_ids = {staff_obj.id for staff_obj, _, _ in requested_staff}
+        HospitalStaff.objects.filter(assigned_booking_id=booking.id).exclude(id__in=requested_ids).update(
+            is_busy=False,
+            assigned_booking_id=None,
+        )
+
+        names = []
+        specs = []
+        contacts = []
+        json_list = []
+        for staff_obj, d_spec, d_phone in requested_staff:
+            d_name = staff_obj.full_name
+            d_spec = d_spec or staff_obj.specialization
+            d_phone = d_phone or staff_obj.contact_number
+            staff_obj.is_busy = True
+            staff_obj.assigned_booking_id = booking.id
+            staff_obj.save(update_fields=["is_busy", "assigned_booking_id", "updated_at"])
+            names.append(d_name)
+            specs.append(d_spec)
+            contacts.append(d_phone)
+            json_list.append({
+                "id": staff_obj.id,
+                "staff_id": staff_obj.staff_id,
+                "full_name": d_name,
+                "role": staff_obj.role,
+                "specialization": d_spec,
+                "contact_number": d_phone,
+            })
         
         booking.assigned_doctors_json = json.dumps(json_list)
         booking.assigned_doctor_names = ", ".join(names)

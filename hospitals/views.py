@@ -112,6 +112,54 @@ def staff_to_dict(member):
     }
 
 
+ACTIVE_BOOKING_STATUSES = {"pending", "confirmed", "assigned", "en_route", "in_progress"}
+
+
+def _sync_staff_allocation_status(hospital):
+    """Reconcile staff availability with the hospital's active bookings."""
+    active_bookings = Booking.objects.filter(
+        Q(assigned_hospital_id=hospital.id)
+        | Q(assigned_hospital_email__iexact=hospital.email)
+        | Q(assigned_hospital_name__iexact=hospital.name)
+    ).filter(status__in=ACTIVE_BOOKING_STATUSES, driver_task_completed=False)
+
+    active_map = {}
+    for booking in active_bookings:
+        try:
+            team = json.loads(booking.assigned_doctors_json or "[]")
+        except (TypeError, ValueError):
+            team = []
+        for member in team if isinstance(team, list) else []:
+            if not isinstance(member, dict):
+                continue
+            if member.get("id"):
+                active_map[str(member["id"])] = booking.id
+            if member.get("staff_id"):
+                active_map[f"staff:{str(member['staff_id']).strip().lower()}"] = booking.id
+            member_name = str(member.get("full_name") or member.get("name") or "").strip().lower()
+            if member_name:
+                active_map[member_name] = booking.id
+        for name in str(booking.assigned_doctor_names or "").split(","):
+            if name.strip():
+                active_map[name.strip().lower()] = booking.id
+
+    for staff in hospital.staff.all():
+        matching_booking_id = (
+            active_map.get(str(staff.id))
+            or active_map.get(f"staff:{str(staff.staff_id or '').strip().lower()}")
+            or active_map.get(str(staff.full_name or "").strip().lower())
+        )
+        if matching_booking_id:
+            if not staff.is_busy or staff.assigned_booking_id != matching_booking_id:
+                staff.is_busy = True
+                staff.assigned_booking_id = matching_booking_id
+                staff.save(update_fields=["is_busy", "assigned_booking_id", "updated_at"])
+        elif staff.is_busy or staff.assigned_booking_id is not None:
+            staff.is_busy = False
+            staff.assigned_booking_id = None
+            staff.save(update_fields=["is_busy", "assigned_booking_id", "updated_at"])
+
+
 
 
 def bed_to_dict(bed):
@@ -891,6 +939,7 @@ def hospital_staff_list(request, hospital_id):
     except Hospital.DoesNotExist:
         return JsonResponse({"error": "Hospital not found"}, status=404)
     if request.method == "GET":
+        _sync_staff_allocation_status(hospital)
         return JsonResponse([staff_to_dict(s) for s in hospital.staff.all()], safe=False)
     if request.method == "POST":
         data = json.loads(request.body or b"{}")
@@ -928,6 +977,10 @@ def hospital_staff_detail(request, hospital_id, staff_id):
     if request.method == "DELETE":
         staff.delete()
         return JsonResponse({"status": "deleted"})
+    if request.method == "GET":
+        _sync_staff_allocation_status(staff.hospital)
+        staff.refresh_from_db()
+        return JsonResponse(staff_to_dict(staff))
     if request.method == "PATCH":
         data = json.loads(request.body or b"{}")
         if "staff_id" in data or "registration_number" in data:
@@ -1051,6 +1104,8 @@ def staff_dashboard(request):
     ).first()
     if not staff:
         return JsonResponse({"error": "Staff account not found or inactive"}, status=404)
+    _sync_staff_allocation_status(staff.hospital)
+    staff.refresh_from_db()
 
     from bookings.views import booking_to_dict
 
@@ -1118,6 +1173,8 @@ def staff_notifications(request):
     staff = HospitalStaff.objects.select_related("hospital").filter(staff_id__iexact=staff_id, email__iexact=email, is_active=True).first()
     if not staff:
         return JsonResponse({"error": "Staff account not found or inactive"}, status=404)
+    _sync_staff_allocation_status(staff.hospital)
+    staff.refresh_from_db()
     hospital_filter = Q(assigned_hospital_id=staff.hospital_id)
     if staff.hospital.email:
         hospital_filter |= Q(assigned_hospital_email__iexact=staff.hospital.email)

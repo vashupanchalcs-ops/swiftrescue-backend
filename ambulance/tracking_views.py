@@ -7,6 +7,7 @@ from django.http import JsonResponse
 from django.utils import timezone
 from ambulance.models import Ambulance, DriverLocation, SuggestedRoute
 import json
+import re
 import urllib.request
 import urllib.parse
 
@@ -91,18 +92,22 @@ def driver_ping(request):
     amb_id = data.get("ambulance_id")
     lat    = data.get("latitude")
     lng    = data.get("longitude")
-    speed  = data.get("speed", 0)
+    raw_speed = data.get("speed", 0)
     if not all([email, amb_id, lat, lng]):
         return JsonResponse({"error": "driver_email, ambulance_id, latitude, longitude required"}, status=400)
+    try:
+        speed_value = float(re.sub(r"[^\d.]", "", str(raw_speed or "0")) or 0.0)
+    except (TypeError, ValueError):
+        speed_value = 0.0
     try:
         amb = Ambulance.objects.get(id=amb_id)
     except Ambulance.DoesNotExist:
         return JsonResponse({"error": "Ambulance not found"}, status=404)
     amb.latitude  = lat
     amb.longitude = lng
-    amb.speed     = str(speed)
+    amb.speed     = str(speed_value)
     amb.save(update_fields=["latitude", "longitude", "speed", "last_updated"])
-    DriverLocation.objects.create(ambulance=amb, driver_email=email, latitude=lat, longitude=lng, speed=speed)
+    DriverLocation.objects.create(ambulance=amb, driver_email=email, latitude=lat, longitude=lng, speed=speed_value)
     pending = SuggestedRoute.objects.filter(ambulance=amb, status__in=["pending", "accepted"]).order_by("-created_at").first()
     return JsonResponse({"status": "ok", "timestamp": timezone.now().isoformat(), "pending_route": _route_dict(pending)})
 
@@ -176,6 +181,19 @@ def respond_route(request, route_id):
         route.completed_at = timezone.now()
         route.ambulance.status = "available"
         route.ambulance.save(update_fields=["status"])
+        if route.booking_id:
+            from bookings.models import Booking
+            booking = Booking.objects.filter(id=route.booking_id).first()
+            if booking:
+                booking.status = "completed"
+                booking.driver_task_completed = True
+                booking.driver_task_completed_at = timezone.now()
+                booking.save(update_fields=["status", "driver_task_completed", "driver_task_completed_at"])
+                from hospitals.models import HospitalStaff
+                HospitalStaff.objects.filter(assigned_booking_id=booking.id).update(
+                    is_busy=False,
+                    assigned_booking_id=None,
+                )
     route.save()
     return JsonResponse(_route_dict(route))
 
