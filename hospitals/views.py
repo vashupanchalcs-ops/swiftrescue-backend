@@ -1184,7 +1184,10 @@ def staff_signup(request):
     if not staff.hospital.is_active:
         return JsonResponse({"error": "This hospital account is currently inactive"}, status=403)
     if staff.password_hash:
-        return JsonResponse({"error": "Staff account is already set up. Please use Sign In."}, status=409)
+        return JsonResponse(
+            {"error": "Staff account is already registered. Use Sign In or Forgot password."},
+            status=409,
+        )
     if data.get("verify_only"):
         return JsonResponse({"valid": True, "otp_required": True})
 
@@ -1217,8 +1220,21 @@ def staff_login(request):
         registration_number__iexact=registration_number,
         is_active=True,
     ).first()
-    if not staff or not staff.password_hash or not check_password(password, staff.password_hash):
-        return JsonResponse({"error": "Staff ID, Registration No. or password do not match hospital records"}, status=401)
+    if not staff:
+        return JsonResponse(
+            {"error": "Email, Staff ID or Registration No. do not match hospital records"},
+            status=401,
+        )
+    if not staff.password_hash:
+        return JsonResponse(
+            {"error": "Staff account is not registered yet. Use Sign Up first."},
+            status=401,
+        )
+    if not check_password(password, staff.password_hash):
+        return JsonResponse(
+            {"error": "Incorrect staff password. Use Forgot password to set a new one."},
+            status=401,
+        )
     if not staff.hospital.is_active:
         return JsonResponse({"error": "This hospital account is currently inactive"}, status=403)
     return JsonResponse(_staff_auth_payload(staff))
