@@ -8,6 +8,7 @@ from django.contrib.auth.hashers import make_password, check_password
 from django.core import signing
 from decimal import Decimal, InvalidOperation
 from ambulance.models import Ambulance
+from ambulance.views import _otp_cache_delete, _otp_cache_get
 from hospitals.models import Hospital, HospitalStaff, HospitalBed
 from bookings.models import Booking
 from ambulance_tracker.pagination import parse_list_options
@@ -1220,6 +1221,52 @@ def staff_login(request):
         return JsonResponse({"error": "Staff ID, Registration No. or password do not match hospital records"}, status=401)
     if not staff.hospital.is_active:
         return JsonResponse({"error": "This hospital account is currently inactive"}, status=403)
+    return JsonResponse(_staff_auth_payload(staff))
+
+
+@csrf_exempt
+def staff_password_reset(request):
+    """Reset a staff password after validating the registered email OTP."""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    try:
+        data = json.loads(request.body or b"{}")
+    except (TypeError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    email = str(data.get("email", "")).strip().lower()
+    staff_id = str(data.get("staff_id", "")).strip()
+    registration_number = str(data.get("registration_number", "")).strip()
+    password = str(data.get("password", ""))
+    otp = str(data.get("otp", "")).strip()
+    if not all((email, staff_id, registration_number, password, otp)):
+        return JsonResponse(
+            {"error": "Email, Staff ID, Registration No., OTP and password are required"},
+            status=400,
+        )
+    if len(password) < 6:
+        return JsonResponse({"error": "Password must be at least 6 characters"}, status=400)
+
+    staff = HospitalStaff.objects.select_related("hospital").filter(
+        email__iexact=email,
+        staff_id__iexact=staff_id,
+        registration_number__iexact=registration_number,
+        is_active=True,
+    ).first()
+    if not staff:
+        return JsonResponse({"error": "Staff details do not match hospital records"}, status=401)
+    if not staff.hospital.is_active:
+        return JsonResponse({"error": "This hospital account is currently inactive"}, status=403)
+
+    saved_otp = _otp_cache_get(f"otp_{email}")
+    if not saved_otp or otp != str(saved_otp):
+        return JsonResponse({"error": "Invalid or expired OTP"}, status=401)
+
+    _otp_cache_delete(f"otp_{email}")
+    staff.password_hash = make_password(password)
+    staff.save(update_fields=["password_hash", "updated_at"])
     return JsonResponse(_staff_auth_payload(staff))
 
 

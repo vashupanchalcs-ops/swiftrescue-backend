@@ -53,6 +53,7 @@ urlpatterns = [
     path("api/logout/",           views.logout_view),
     path("api/auth/staff-signup/", hospital_views.staff_signup),
     path("api/auth/staff-login/",  hospital_views.staff_login),
+    path("api/auth/staff-password-reset/", hospital_views.staff_password_reset),
     path("api/staff/dashboard/",    hospital_views.staff_dashboard),
     path("api/staff/notifications/", hospital_views.staff_notifications),
 
