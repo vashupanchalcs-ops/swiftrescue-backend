@@ -118,6 +118,7 @@ def _message_to_dict(message):
         "metadata": message.metadata,
         "seen_by_user": message.seen_by_user,
         "seen_by_driver": message.seen_by_driver,
+        "seen_by_staff": message.seen_by_staff,
         "seen_by_admin": message.seen_by_admin,
         "created_at": _iso(message.created_at),
     }
@@ -1038,8 +1039,8 @@ def chat_messages(request, thread_id):
     if data is None:
         return JsonResponse({"error": "Invalid JSON body"}, status=400)
     sender_role = str(data.get("sender_role", "")).strip().lower()
-    if sender_role not in {"admin", "driver", "user"}:
-        return JsonResponse({"error": "sender_role must be admin, driver, or user"}, status=400)
+    if sender_role not in {"admin", "driver", "staff", "user"}:
+        return JsonResponse({"error": "sender_role must be admin, driver, staff, or user"}, status=400)
     message_text = str(data.get("message", "")).strip()
     if not message_text:
         return JsonResponse({"error": "message is required"}, status=400)
@@ -1085,8 +1086,8 @@ def chat_mark_read(request, thread_id):
         return JsonResponse({"error": "PATCH only"}, status=405)
     data = _json_body(request)
     role = str((data or {}).get("role", "")).strip().lower()
-    if role not in {"admin", "driver", "user"}:
-        return JsonResponse({"error": "role must be admin, driver, or user"}, status=400)
+    if role not in {"admin", "driver", "staff", "user"}:
+        return JsonResponse({"error": "role must be admin, driver, staff, or user"}, status=400)
     try:
         thread = BookingChatThread.objects.get(id=thread_id)
     except BookingChatThread.DoesNotExist:

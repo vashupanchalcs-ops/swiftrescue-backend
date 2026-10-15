@@ -201,6 +201,7 @@ class BookingChatMessage(models.Model):
         ("system", "System"),
         ("admin", "Admin"),
         ("driver", "Driver"),
+        ("staff", "Hospital Staff"),
         ("user", "User"),
     ]
     TYPE_CHOICES = [
@@ -218,6 +219,7 @@ class BookingChatMessage(models.Model):
     metadata = models.TextField(blank=True, default="")
     seen_by_user = models.BooleanField(default=False)
     seen_by_driver = models.BooleanField(default=False)
+    seen_by_staff = models.BooleanField(default=False)
     seen_by_admin = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
