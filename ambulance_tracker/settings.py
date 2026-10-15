@@ -72,10 +72,14 @@ CORS_ALLOWED_ORIGINS = list(dict.fromkeys([
     "http://127.0.0.1:5173",
 ]))
 CORS_ALLOWED_ORIGIN_REGEXES = [
-    r"^https://[a-z0-9-]+\.vercel\.app$",
-    r"^https://[a-z0-9-]+\.onrender\.com$",
+    # Credentialed requests are limited to the production SPA origin. Other
+    # preview origins remain non-credentialed/blocked by this policy.
+    r"^https://book-your-amb\.vercel\.app$",
 ]
-CORS_ALLOW_CREDENTIALS = False
+# Staff login is also safe for credentialed browser requests, while the
+# explicit origins and restricted regex above keep credential sharing scoped
+# to the Aarogya frontend and trusted preview deployments.
+CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
     "https://*.onrender.com",
     # Keep the current Render hostname explicit as well. This prevents the
