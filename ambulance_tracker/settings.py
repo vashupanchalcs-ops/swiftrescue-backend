@@ -132,7 +132,14 @@ except (TypeError, ValueError):
     db_conn_max_age = 0
 if database_url:
     DATABASES = {
-        "default": dj_database_url.parse(database_url, conn_max_age=db_conn_max_age),
+        # Render PostgreSQL requires TLS.  Keep this explicit even when the
+        # dashboard-provided DATABASE_URL omits sslmode=require; otherwise a
+        # worker can fail every request with a generic 500 after a DB restart.
+        "default": dj_database_url.parse(
+            database_url,
+            conn_max_age=db_conn_max_age,
+            ssl_require=True,
+        ),
     }
 elif os.getenv("POSTGRES_DB"):
     DATABASES = {
